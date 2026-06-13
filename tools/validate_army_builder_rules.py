@@ -32,7 +32,10 @@ def main() -> None:
 
     general_classes = Counter()
     unresolved_generals: list[str] = []
+    staff_final_men_errors: list[str] = []
     for card in catalog.cards:
+        if "_gen_staff_" in card.unit_key and card.final_men_count != 16:
+            staff_final_men_errors.append(f"{card.faction_key},{card.unit_key}")
         if not card.is_general:
             continue
         try:
@@ -66,25 +69,31 @@ def main() -> None:
         f"classified staff-general rows (exact raw Men / 2 is 16 or 61): {general_classes['staff']}",
         f"classified combat-general rows: {general_classes['combat']}",
         f"general rows unresolved because raw Men is blank: {len(unresolved_generals)}",
+        f"staff-general rows whose final men count is not 16: {len(staff_final_men_errors)}",
         f"AC/ToW faction cap parse errors: {len(cap_errors)}",
+        "combat-general cap exceptions: none (all AC/ToW factions use 9 - N)",
         "",
         "Unresolved mappings",
         "-------------------",
         "General rows with blank raw Men are not classified by guessing from their key.",
     ]
     lines.extend(unresolved_generals or ["none"])
+    lines.extend(["", "Staff final-men normalization errors", "------------------------------------"])
+    lines.extend(staff_final_men_errors or ["none"])
     lines.extend(["", "Faction cap parse errors", "------------------------"])
     lines.extend(cap_errors or ["none"])
     lines.extend(["", "Staff placement rows absent from main CSV", "-----------------------------------------"])
     lines.extend([f"{faction},{unit}" for faction, unit in staff_missing_from_main] or ["none"])
     lines.extend([
         "",
-        "Known unknowns intentionally not implemented",
-        "--------------------------------------------",
-        "UnitsOfTypeAndGens",
-        "UnitsCompatiblity",
-        "XP-adjusted cost",
-        "commander conflicts",
+        "Confirmed app scope",
+        "-------------------",
+        "The one staff slot is independent of the combat-general cap.",
+        "A staff or combat general may occupy it; a combat occupant does not use combat cap.",
+        "Commander variants share the cap of the unit key before _com_<digits>.",
+        "Unit compatibility exclusions are not applied.",
+        "XP-adjusted pricing is not applied; base_mp_cost is used directly.",
+        "No additional commander-conflict rule is assumed.",
     ])
 
     REPORT.parent.mkdir(parents=True, exist_ok=True)

@@ -10,7 +10,9 @@ staff placement rows missing from main CSV: 0
 classified staff-general rows (exact raw Men / 2 is 16 or 61): 528
 classified combat-general rows: 9165
 general rows unresolved because raw Men is blank: 332
+staff-general rows whose final men count is not 16: 0
 AC/ToW faction cap parse errors: 0
+combat-general cap exceptions: none (all AC/ToW factions use 9 - N)
 
 Unresolved mappings
 -------------------
@@ -348,6 +350,10 @@ ntw3_tow_b11_x8_014,ntw3_cav_lance_189_999_0575_tow_014_com_0288
 ntw3_tow_b11_x8_014,ntw3_inf_skirm_191_999_4853_tow_014_com_1963
 ntw3_tow_b11_x8_014,ntw3_gen_staff_189_4_0215_tow_014
 
+Staff final-men normalization errors
+------------------------------------
+none
+
 Faction cap parse errors
 ------------------------
 none
@@ -356,9 +362,11 @@ Staff placement rows absent from main CSV
 -----------------------------------------
 none
 
-Known unknowns intentionally not implemented
---------------------------------------------
-UnitsOfTypeAndGens
-UnitsCompatiblity
-XP-adjusted cost
-commander conflicts
+Confirmed app scope
+-------------------
+The one staff slot is independent of the combat-general cap.
+A staff or combat general may occupy it; a combat occupant does not use combat cap.
+Commander variants share the cap of the unit key before _com_<digits>.
+Unit compatibility exclusions are not applied.
+XP-adjusted pricing is not applied; base_mp_cost is used directly.
+No additional commander-conflict rule is assumed.

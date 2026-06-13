@@ -43,9 +43,17 @@ OUTPUT_COLUMNS = [
     "icon_filename", "icon_path", "icon_match_method",
     "accuracy", "reload_skill", "morale", "melee_attack", "melee_defense",
     "charge_bonus", "can_form_square", "has_stamina", "is_shock_resistant",
-    "can_inspire", "has_guerrilla_deployment", "can_place_stakes",
+    "can_inspire", "has_guerrilla_deployment", "guerrilla_badge_path",
+    "guerrilla_badge_layout", "can_place_stakes",
     "can_place_mines", "scares_enemies", "can_build_barricades",
 ]
+
+# These two source keys have conflicting duplicate localisation rows. The original
+# in-game card identifies the shared portrait and biography as Wintzingerode.
+UNIT_NAME_OVERRIDES = {
+    "ntw3_gen_staff_285_2_0600": "Ferdinand von Wintzingerode",
+    "ntw3_gen_staff_285_2_0600_tow_057": "Ferdinand von Wintzingerode",
+}
 
 WARNING_COLUMNS = [
     "warning_type", "unit_key", "faction_key", "source_file", "source_row",
@@ -255,6 +263,16 @@ def select_projectile(
     gun_map: dict[str, list[str]], warnings: list[dict[str, str]],
 ) -> tuple[str, str, str, str]:
     if stats_row is None:
+        return "", "", "", ""
+
+    # Some melee cavalry templates name a carried carbine even though the unit has
+    # no ammunition and cannot fire. Do not treat equipment-only weapon labels as
+    # active ranged weapons.
+    try:
+        ammunition = int(float(text_value(stats_row.get("ammo")) or "0"))
+    except ValueError:
+        ammunition = 0
+    if ammunition <= 0 and not text_value(stats_row.get("gun_type")):
         return "", "", "", ""
 
     direct_fields = ["primary_missile_weapon", "default_missile_type"]
@@ -498,7 +516,7 @@ def write_summary(
     lines.extend(["", "Representative validation rows:"])
     lines.extend(f"- {kind}: {unit_key or 'not found'}" for kind, unit_key in representative.items())
     lines.extend(["", f"database_complete: {'yes' if not warnings else 'no'}"])
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text("\n".join(line.rstrip() for line in lines) + "\n", encoding="utf-8")
 
 
 def first_matching(output: pd.DataFrame, mask: pd.Series) -> str:
@@ -582,13 +600,20 @@ def main() -> None:
                             source_file="ntw3_unit_stats_land.tsv", reference_value=unit_key,
                             details="No unambiguous land-stats row found.")
 
-            unit_name, _ = localisation_value(unit, loc_lookup, "name")
+            unit_name = UNIT_NAME_OVERRIDES.get(unit_key, "")
+            if not unit_name:
+                unit_name, _ = localisation_value(unit, loc_lookup, "name")
             if not unit_name:
                 add_warning(warnings, "missing_unit_name", unit_key=unit_key,
                             source_file="localisation.loc.tsv", reference_value=text_value(unit.get("on_screen_name")),
                             details="No exact inspected localisation-key candidate resolved.")
             description, _ = localisation_value(unit, loc_lookup, "description")
             displayed_abilities = parse_displayed_abilities(description)
+            if (
+                stats is not None
+                and text_value(stats.get("guerrilla_deployment")).casefold() == "true"
+            ):
+                displayed_abilities["has_guerrilla_deployment"] = "true"
             tag = DIVISION_RE.search(description)
             if tag:
                 division_code, division_id, brigade_id = tag.group(0), tag.group(1), tag.group(2)
@@ -614,6 +639,7 @@ def main() -> None:
                 unit_key, icon_name, by_filename, by_stem, by_unit_key_body, warnings
             )
 
+            unit_class = text_value(unit.get("class"))
             men_raw = text_value(stats.get("men")) if stats is not None else ""
             men_display = ""
             if men_raw:
@@ -628,8 +654,10 @@ def main() -> None:
                                 source_file="ntw3_unit_stats_land.tsv", reference_value=men_raw,
                                 details="Men value is not numeric.")
 
+            if unit_class.casefold() == "general" and "_gen_staff_" in unit_key:
+                men_display = "16"
+
             rating = rating_lookup.get(unit_key)
-            unit_class = text_value(unit.get("class"))
             unit_cache[unit_key] = {
                 "unit_key": unit_key,
                 "unit_name": unit_name,
@@ -672,6 +700,16 @@ def main() -> None:
                 "melee_defense": text_value(stats.get("melee_defense")) if stats is not None else "",
                 "charge_bonus": text_value(stats.get("charge_bonus")) if stats is not None else "",
                 **displayed_abilities,
+                "guerrilla_badge_path": (
+                    "assets/ui/guerrilla_badge/guerrilla_badge.png"
+                    if displayed_abilities["has_guerrilla_deployment"] == "true"
+                    else ""
+                ),
+                "guerrilla_badge_layout": (
+                    "lower_right"
+                    if displayed_abilities["has_guerrilla_deployment"] == "true"
+                    else ""
+                ),
                 "__gun_type": text_value(stats.get("gun_type")) if stats is not None else "",
             }
         row = dict(unit_cache[unit_key])

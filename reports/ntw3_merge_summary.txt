@@ -20,8 +20,8 @@ Final output:
 rows: 22658
 unique_unit_keys: 22642
 unique_faction_keys: 297
-resolved_unit_names: 22656
-unresolved_unit_names: 2
+resolved_unit_names: 22658
+unresolved_unit_names: 0
 units_with_ACDV_tags: 19875
 units_without_ACDV_tags: 2783
 resolved_speed_codes: 21854
@@ -29,9 +29,9 @@ speed_codes: C1=452, C2=543, C3=1355, C4=2718, C5=321, F1=29, F2=246, F3=499, F4
 unmapped_speed_entities: gun_crew | gun_crew | artillery_horse
 resolved_ranges: 16052
 ranges_by_selection_method: cannon_round_shot=1973, direct_projectile_match=13872, howitzer_shell=149, mortar_shell=2, rocket_projectile=4, unicorn_shell=52
-unresolved_weapon_keys: carbine
-unresolved_gun_types: 
-missing_projectile_keys: 
+unresolved_weapon_keys:
+unresolved_gun_types:
+missing_projectile_keys:
 ambiguous_projectile_selections: 0
 units_with_command_stars: 6516
 resolved_icons: 22658
@@ -47,10 +47,8 @@ Warnings by type:
 - missing_division_tag: 2767
 - missing_land_stats: 796
 - missing_land_unit: 3010
-- missing_unit_name: 2
 - rounded_down_men_display: 1976
 - unmapped_speed_entity: 804
-- unresolved_weapon: 92
 
 Representative validation rows:
 - infantry: ntw3_inf_grena_001_006_0210
