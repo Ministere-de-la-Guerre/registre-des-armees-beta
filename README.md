@@ -84,12 +84,87 @@ Staff generals do not contain an ACDV tag, so they belong at the army-corps root
 
 ToW icons are collected into their respective shared `TOW` folders.
 
+## Army-Builder Rules
+
+Reusable source-backed calculations are in `tools/army_builder_rules.py`. The main
+CSV is the recruitable-card input: each row is an allowed `unit_key + faction_key`
+pairing, and `base_mp_cost` is that card's `MPCost`. Commander variants therefore
+use their own row cost without adding another base-unit cost.
+
+Base army cost is:
+
+```text
+sum(selected card MPCost)
+```
+
+Only faction keys containing `_ac_` receive brigade or division discounts. Placement
+is parsed strictly from `ACDV<division>B<brigade>`; the raw numeric division and
+brigade IDs are used for pricing.
+
+For every recruitable, tagged, non-general row in a group:
+
+```text
+roster cost contribution = Cap * MPCost
+required count contribution = Cap
+```
+
+Generals are excluded from predefined roster cost and required count. Every selected
+tagged card still adds one to its brigade and division completion count, including a
+tagged combat general. A division is complete when its selected count reaches its
+required count. A complete division receives only the division discount; otherwise,
+each complete brigade receives its own discount. They do not stack.
+
+```text
+group discount = floor(group roster cost * (group required count - 1) / 100)
+final AC cost = base army cost - total applied discount
+```
+
+German States detection splits the faction key on `_` and checks only whether the
+fourth component contains lowercase `g`. Its applied discount is:
+
+```text
+floor(total normal discount * 1.5)
+```
+
+The code uses integer arithmetic for both floors.
+
+### General And Card Limits
+
+A General-class row is staff/nonfighting only when exact raw `Men / 2` is 16 or 61
+(`men_raw` is 32 or 122); every other General-class row is combat. The display field
+is not used because it can be floor-derived. Missing raw `Men` is reported rather
+than guessed. Staff cap is 1. Combat cap is 1 for faction keys without `_ac_` and
+without `_tow_`. For AC/ToW keys, trailing digits `N` are read from the fourth
+underscore-separated component and combat cap is `9 - N`.
+
+AC roster selection is a separate mode: staff maximum remains the staff cap and
+combat maximum is `combat cap + 2`. This is not folded into normal cap checks.
+
+Other implemented limits are 31 total cards, 2 foot artillery, 1 horse artillery,
+and 10 heavy cavalry. A displayed division supports at most 7 brigade slots; seven
+is a UI maximum, not a requirement that every slot be occupied.
+
+### Known Unknowns
+
+`UnitsOfTypeAndGens`, `UnitsCompatiblity`, XP-adjusted cost, and commander conflicts
+are intentionally not implemented because their real source logic is not present in
+the repository. See `reports/army_builder_rules_validation.txt` for current input
+validation and unresolved mappings.
+
+Run the rule tests with the bundled Python runtime or any Python 3.10+ interpreter:
+
+```text
+python -m unittest discover -s tools/tests -v
+```
+
 ## Rebuild Tools
 
 - `tools/build_ntw3_army_builder_database.py`
 - `tools/organize_icons_by_army_corps.py`
 - `tools/collect_staff_general_icons.py`
 - `tools/build_command_star_assets.py`
+- `tools/army_builder_rules.py`
+- `tools/validate_army_builder_rules.py`
 
 The original NTW3 installation is treated as read-only. Build outputs and extracted
 copies are written only inside this repository.
