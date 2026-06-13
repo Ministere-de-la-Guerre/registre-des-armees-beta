@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import csv
+import re
 import unittest
+from pathlib import Path
 
 from tools.army_builder_rules import (
     MAX_BRIGADE_SLOTS_PER_DIVISION,
     Placement,
     RuleDataError,
     UnitCard,
+    UnitCatalog,
     ac_selection_general_maxima,
     calculate_army_cost,
     check_known_limits,
@@ -24,6 +28,7 @@ def card(
     brigade: int | None = 1,
     cost: int = 100,
     cap: int = 1,
+    men_display: int | None = None,
 ) -> UnitCard:
     return UnitCard(
         unit_key=key,
@@ -38,6 +43,7 @@ def card(
         mp_cost=cost,
         cap=cap,
         is_general=unit_class == "general",
+        men_display=men_display,
     )
 
 
@@ -131,6 +137,26 @@ class LimitTests(unittest.TestCase):
         self.assertEqual(general_caps("ntw3_ac_test_x5_001").combat, 4)
         self.assertEqual(ac_selection_general_maxima("ntw3_ac_test_x5_001").combat, 6)
 
+    def test_every_real_ac_and_tow_faction_uses_nine_minus_n(self) -> None:
+        csv_path = Path(__file__).resolve().parents[2] / "ntw3_army_builder_units.csv"
+        with csv_path.open(newline="", encoding="utf-8-sig") as handle:
+            factions = {
+                row["faction_key"]
+                for row in csv.DictReader(handle)
+                if "_ac_" in row["faction_key"] or "_tow_" in row["faction_key"]
+            }
+
+        self.assertGreater(len(factions), 0)
+        for faction in factions:
+            match = re.search(r"(\d+)$", faction.split("_")[3])
+            self.assertIsNotNone(match, faction)
+            expected = 9 - int(match.group(1))
+            self.assertEqual(general_caps(faction).combat, expected, faction)
+            if "_ac_" in faction:
+                self.assertEqual(
+                    ac_selection_general_maxima(faction).combat, expected + 2, faction
+                )
+
     def test_known_card_and_type_limits(self) -> None:
         faction = "france"
         selected = [
@@ -155,12 +181,111 @@ class LimitTests(unittest.TestCase):
         rules = {violation.rule for violation in result.violations}
         self.assertEqual(result.counts["staff_generals"], 2)
         self.assertEqual(result.counts["combat_generals"], 1)
-        self.assertEqual(rules, {"staff_generals"})
+        self.assertEqual(rules, {"staff_slot_occupants"})
 
     def test_missing_general_men_is_not_guessed(self) -> None:
         unknown = card("unknown", faction="france", unit_class="general", men=None)
         with self.assertRaises(RuleDataError):
             check_known_limits([unknown], "france")
+
+    def test_all_staff_general_final_men_counts_are_16(self) -> None:
+        sourced = card(
+            "ntw3_gen_staff_sourced", unit_class="general", men=122, men_display=61
+        )
+        missing_source = card(
+            "ntw3_gen_staff_missing", unit_class="general", men=None, men_display=None
+        )
+        self.assertEqual(sourced.final_men_count, 16)
+        self.assertEqual(missing_source.final_men_count, 16)
+
+    def test_staff_and_combat_general_caps_are_independent(self) -> None:
+        faction = "ntw3_ac_test_x7_001"
+        staff = card("staff", faction=faction, unit_class="general", men=32)
+        combat_a = card("combat_a", faction=faction, unit_class="general", men=80)
+        combat_b = card("combat_b", faction=faction, unit_class="general", men=80)
+        result = check_known_limits([staff, combat_a, combat_b], faction)
+        self.assertFalse(result.violations)
+
+    def test_combat_general_can_fill_staff_slot_without_using_combat_cap(self) -> None:
+        faction = "ntw3_ac_test_x7_001"
+        combat = [
+            card(f"combat_{index}", faction=faction, unit_class="general", men=80)
+            for index in range(3)
+        ]
+        without_slot = check_known_limits(combat, faction)
+        self.assertEqual(
+            {violation.rule for violation in without_slot.violations},
+            {"combat_generals_against_cap"},
+        )
+
+        with_slot = check_known_limits(combat, faction, staff_slot_index=0)
+        self.assertFalse(with_slot.violations)
+        self.assertEqual(with_slot.counts["combat_generals"], 3)
+        self.assertEqual(with_slot.counts["combat_generals_against_cap"], 2)
+        self.assertEqual(with_slot.counts["staff_slot_occupants"], 1)
+
+    def test_combat_general_cannot_share_staff_slot_with_staff_general(self) -> None:
+        faction = "ntw3_ac_test_x7_001"
+        combat = card("combat", faction=faction, unit_class="general", men=80)
+        staff = card("staff", faction=faction, unit_class="general", men=32)
+        result = check_known_limits([combat, staff], faction, staff_slot_index=0)
+        self.assertEqual(
+            {violation.rule for violation in result.violations},
+            {"staff_slot_occupants"},
+        )
+
+    def test_commander_variant_uses_its_underlying_unit_cap(self) -> None:
+        faction = "france"
+        base = card(
+            "ntw3_cav_light_214_018_1397",
+            faction=faction,
+            unit_class="cavalry_light",
+            cap=1,
+        )
+        commander = card(
+            "ntw3_cav_light_214_018_1397_com_1463",
+            faction=faction,
+            unit_class="general",
+            men=80,
+            cap=1,
+        )
+        result = check_known_limits([base, commander], faction)
+        violations = {violation.rule: violation for violation in result.violations}
+        rule = f"unit_cap:{faction}:{base.unit_key}"
+        self.assertIn(rule, violations)
+        self.assertEqual(violations[rule].actual, 2)
+        self.assertEqual(violations[rule].maximum, 1)
+
+    def test_platov_catalog_exposes_every_general_without_random_rolls(self) -> None:
+        csv_path = Path(__file__).resolve().parents[2] / "ntw3_army_builder_units.csv"
+        catalog = UnitCatalog.from_csv(csv_path)
+        cards = catalog.cards_for_faction("ntw3_ac_b11_r5_189")
+        generals = [unit for unit in cards if unit.is_general]
+        combat_variants = [unit for unit in generals if "_com_" in unit.unit_key]
+        staff = [unit for unit in generals if "_gen_staff_" in unit.unit_key]
+
+        self.assertEqual(len(cards), 56)
+        self.assertEqual(len(combat_variants), 15)
+        self.assertEqual(len(staff), 1)
+
+
+class AssetMappingTests(unittest.TestCase):
+    def test_guerrilla_cards_reference_reusable_badge_overlay(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        badge_path = "assets/ui/guerrilla_badge/guerrilla_badge.png"
+        with (root / "ntw3_army_builder_units.csv").open(
+            newline="", encoding="utf-8-sig"
+        ) as handle:
+            rows = list(csv.DictReader(handle))
+
+        marked = [row for row in rows if row["has_guerrilla_deployment"] == "true"]
+        unmarked = [row for row in rows if row["has_guerrilla_deployment"] == "false"]
+        self.assertGreater(len(marked), 0)
+        self.assertTrue((root / badge_path).is_file())
+        self.assertTrue(all(row["guerrilla_badge_path"] == badge_path for row in marked))
+        self.assertTrue(all(row["guerrilla_badge_layout"] == "lower_right" for row in marked))
+        self.assertTrue(all(not row["guerrilla_badge_path"] for row in unmarked))
+        self.assertTrue(all(not row["guerrilla_badge_layout"] for row in unmarked))
 
 
 if __name__ == "__main__":

@@ -28,6 +28,39 @@ This applies to both `gen_staff` units and combat-general `_com_` variants. A mi
 rating means that no command-star overlay should be shown. Staff-general ratings use
 1-9 stars; combat-general ratings currently use 1-7 stars.
 
+### Guerrilla Card Badge
+
+Cards with guerrilla deployment display a small red-and-white circular badge over
+the lower-right edge of their portrait. This is a global per-card rule for every
+corps and ToW roster. It applies equally to ordinary units, artillery, combat
+generals, and staff generals. The supplied in-game reference is the
+**10-point Platov / Atamanstvo** corps in Russia 1812
+(`ntw3_ac_b11_r5_189`). In that roster, 39 of 56 selectable cards carry the badge,
+including Cossack cavalry, commander variants, and three artillery cards.
+
+The app must render this as a card overlay whenever the selected CSV row has:
+
+```text
+has_guerrilla_deployment = true
+```
+
+Do not infer it from the corps, unit class, portrait, commander status, or general
+type, and do not
+apply it to every Platov card: the remaining 17 cards have the value `false`. Keep the
+badge separate from the base portrait so one icon can be reused safely across roster
+variants. The overlay position is `lower-right`, matching the supplied screenshot.
+
+The original NTW3 card textures contain this badge baked directly into each marked
+portrait rather than as a separately named UI texture. The reusable app overlay was
+recovered by comparing 80 different marked portraits and retaining the identical
+badge pixels. Use the native 16 x 16 transparent PNG at:
+
+`assets/ui/guerrilla_badge/guerrilla_badge.png`
+
+The CSV also provides `guerrilla_badge_path` and `guerrilla_badge_layout` on every
+marked row. Unmarked rows leave both fields blank. Extraction provenance and layout
+details are recorded in `assets/ui/guerrilla_badge/metadata.json`.
+
 The original game textures were copied read-only from `data.pack`:
 
 - Silver: `ui/frontend ui/skins/army_card_star.tga`
@@ -37,6 +70,9 @@ The gold texture matches the in-game example and is the recommended app asset.
 
 ### Ready-To-Use Assets
 
+- `assets/ui/guerrilla_badge/guerrilla_badge.png`: recovered 16 x 16 transparent
+  guerrilla-deployment overlay for the portrait's lower-right edge.
+- `assets/ui/guerrilla_badge/metadata.json`: extraction provenance and placement.
 - `assets/ui/command_stars/star_gold.png`: one compact transparent gold star.
 - `assets/ui/command_stars/star_silver.png`: one compact transparent silver star.
 - `assets/ui/command_stars/vertical/command_stars_1.png` through
@@ -83,6 +119,51 @@ Staff generals do not contain an ACDV tag, so they belong at the army-corps root
 `assets/staff_general_icons_by_corps/<faction_key>/`
 
 ToW icons are collected into their respective shared `TOW` folders.
+
+## Army-Corps Flags And Theatres
+
+`army_corps_catalog.csv` and `army_corps_catalog.json` are the app-facing indexes for
+the army-corps selection screen. They map every recruitable `faction_key` to:
+
+- its Empire, Coalition, Theatres of War, or Custom Armies section;
+- its historical theatre heading, parsed year/rating, and screen display order;
+- its displayed corps name and canonical source faction key;
+- its original flag directory and available flag variants;
+- separate main-selection and post-selection flag paths.
+
+Assets are organized as:
+
+`assets/army_corps_by_theatre/<side>/<ordered_theatre>/<faction_key>/flag.png`
+
+Use `flag_png_path` (`44x22`) on the main theatre/corps selection screen shown in the
+two overview screenshots. It is a clean flag without the later lobby annotations.
+
+After a corps has been selected, use `post_selection_flag_png_path` when present.
+This is copied from the original `flag_132.tga` (`132x66`) and may contain authored
+corps abbreviations, campaign years, painted backgrounds, and colored rating numbers.
+Those markings are baked into the image; they are not generated text. A blank
+post-selection path means NTW3 supplies no authored `flag_132` for that corps.
+
+The original NTW3 folder remains read-only. `tools/build_army_corps_catalog.py` reads
+the copied `source/tables/ntw3_factions.tsv`, joins source factions to the normalized
+army-builder keys by stable side/block/corps ID. It uses the horizontal
+`mini_flag.tga` shown by the selection screen. When that compact asset is absent, the
+same corps' clean unit-identification or large flag artwork is used. `flag_132.tga`
+is deliberately excluded from main-screen fallbacks because it belongs only after
+corps selection. Every main-selection TGA and PNG is normalized to `44x22`;
+`selection_flag_source_file` and
+`selection_flag_derivation` record whether it was native or resized. The catalog
+lists all other available original variants without duplicating the HUD textures.
+
+The 1813 Hessen-Kassel corps has only a written post-selection flag in its own source
+folder. Its main-screen flag therefore reuses the native clean mini flag from the
+same `s7` Hessen-Kassel contingent in 1808; the donor is recorded in
+`selection_flag_donor_source_faction_key` rather than being hidden.
+
+Theatre headings come from the supplied English in-game screenshots. The `a16` and
+`b16` German Campaign (1813) blocks exist in the source faction table but are not
+visible in those screenshots, so their `theatre_basis` is explicitly recorded as
+`source_block_inference`. See `reports/army_corps_catalog_validation.txt`.
 
 ## Army-Builder Rules
 
@@ -135,21 +216,69 @@ A General-class row is staff/nonfighting only when exact raw `Men / 2` is 16 or 
 is not used because it can be floor-derived. Missing raw `Men` is reported rather
 than guessed. Staff cap is 1. Combat cap is 1 for faction keys without `_ac_` and
 without `_tow_`. For AC/ToW keys, trailing digits `N` are read from the fourth
-underscore-separated component and combat cap is `9 - N`.
+underscore-separated component and combat cap is `9 - N`. This formula applies to
+every army corps; there are no corps-specific exceptions or override table.
 
-AC roster selection is a separate mode: staff maximum remains the staff cap and
-combat maximum is `combat cap + 2`. This is not folded into normal cap checks.
+Every General-class unit whose key contains `_gen_staff_` has a final in-game men
+count of 16. The generated `men_display` field and `UnitCard.final_men_count` both
+enforce 16 for all staff generals, including rows with missing raw men data. The
+original `men_raw` value is preserved for source auditing and classification.
+
+The build app has one corps-command/staff slot. A true staff general can occupy it,
+and a combat general may be moved from a division into that slot. A combat general
+placed there remains a combat-general card for its identity, cost, stars, ACDV
+completion, and underlying-unit cap, but it does not count against the corps'
+combat-general cap. The slot can contain only one general.
+
+Reusable validation represents this placement with the zero-based
+`staff_slot_index` argument to `check_known_limits`. Without that explicit placement,
+combat generals are treated as division generals and count against the combat cap.
+
+`NTW3AC.ACgenerals` has a separate automatic general-pool helper where the staff
+maximum remains 1 and the combat candidate maximum is `combat cap + 2`. That pool
+helper is preserved only as source-reference behavior. The build app must not use it
+to determine which generals are visible.
+
+### Combat-General Display
+
+Display every combat-general commander variant available to the selected corps at
+the same time. Do not reproduce NTW3's random combat-general rolls. Combat-general
+caps restrict how many cards may be selected; they do not restrict which cards the
+user may browse. Staff generals are also always displayed when available.
+
+For example, `ntw3_ac_b11_r5_189` exposes all 15 Platov combat-general commander
+variants simultaneously, alongside Matvei Platov as its staff general.
+`UnitCatalog.cards_for_faction()` returns the complete unrandomized card list.
+
+A combat-general commander variant counts as one card against the cap of its
+underlying unit. The underlying key is obtained by removing the final
+`_com_<digits>` suffix. For example, selecting
+`ntw3_cav_light_214_018_1397_com_1463` uses one of the available slots for
+`ntw3_cav_light_214_018_1397`; with a cap of 1, the commander and ordinary unit
+cannot both be selected.
 
 Other implemented limits are 31 total cards, 2 foot artillery, 1 horse artillery,
 and 10 heavy cavalry. A displayed division supports at most 7 brigade slots; seven
 is a UI maximum, not a requirement that every slot be occupied.
 
-### Known Unknowns
+### Confirmed Scope
 
-`UnitsOfTypeAndGens`, `UnitsCompatiblity`, XP-adjusted cost, and commander conflicts
-are intentionally not implemented because their real source logic is not present in
-the repository. See `reports/army_builder_rules_validation.txt` for current input
-validation and unresolved mappings.
+The app uses the CSV `base_mp_cost` directly and does not apply XP-adjusted pricing.
+It does not apply unit-compatibility exclusions. The relevant commander behavior is
+implemented as shared cap accounting between `_com_` variants and their underlying
+unit; no additional commander-conflict rule is assumed.
+
+Range extraction requires an active ranged weapon. Equipment-template labels such
+as `carbine` are ignored when the unit has zero ammunition and no artillery gun type;
+those cavalry cards are melee-only and correctly retain a blank range.
+
+See `reports/army_builder_rules_validation.txt` for current input validation and
+unresolved source-data mappings.
+
+The two conflicting localisation rows for `ntw3_gen_staff_285_2_0600` and its
+`_tow_057` variant are resolved as **Ferdinand von Wintzingerode**. This is confirmed
+by the original in-game card, which matches the 240 cost, two-star command rating,
+portrait, and Wintzingerode biography. The override is limited to those exact keys.
 
 Run the rule tests with the bundled Python runtime or any Python 3.10+ interpreter:
 
@@ -165,6 +294,7 @@ python -m unittest discover -s tools/tests -v
 - `tools/build_command_star_assets.py`
 - `tools/army_builder_rules.py`
 - `tools/validate_army_builder_rules.py`
+- `tools/build_army_corps_catalog.py`
 
 The original NTW3 installation is treated as read-only. Build outputs and extracted
 copies are written only inside this repository.

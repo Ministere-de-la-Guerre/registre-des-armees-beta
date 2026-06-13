@@ -12,6 +12,7 @@ from typing import Iterable, Mapping, Sequence
 
 ACDV_RE = re.compile(r"^ACDV(?P<division>\d+)B(?P<brigade>\d+)$")
 TRAILING_DIGITS_RE = re.compile(r"(?P<number>\d+)$")
+COMMANDER_SUFFIX_RE = re.compile(r"_com_\d+$")
 
 MAX_TOTAL_UNIT_CARDS = 31
 MAX_FOOT_ARTILLERY = 2
@@ -40,6 +41,7 @@ class UnitCard:
     mp_cost: int
     cap: int
     is_general: bool
+    men_display: int | None = None
 
     @classmethod
     def from_csv_row(cls, row: Mapping[str, str]) -> "UnitCard":
@@ -64,7 +66,19 @@ class UnitCard:
             mp_cost=_required_int(row.get("base_mp_cost", ""), "base_mp_cost", unit_key),
             cap=_required_int(row.get("unit_cap", ""), "unit_cap", unit_key),
             is_general=is_general,
+            men_display=_optional_int(row.get("men_display", ""), "men_display", unit_key),
         )
+
+    @property
+    def final_men_count(self) -> int | None:
+        if self.is_general and "_gen_staff_" in self.unit_key:
+            return 16
+        return self.men_display
+
+    @property
+    def cap_group_key(self) -> str:
+        """Return the underlying unit key used for shared unit-cap accounting."""
+        return COMMANDER_SUFFIX_RE.sub("", self.unit_key)
 
 
 @dataclass(frozen=True)
@@ -288,6 +302,7 @@ def general_caps(faction_key: str) -> GeneralCaps:
 
 
 def ac_selection_general_maxima(faction_key: str) -> GeneralCaps:
+    """Return the separate automatic AC general-pool maxima from NTW3AC.ACgenerals."""
     if "_ac_" not in faction_key:
         raise RuleDataError("AC selection maxima apply only to faction keys containing '_ac_'.")
     caps = general_caps(faction_key)
@@ -299,17 +314,35 @@ def check_known_limits(
     faction_key: str,
     *,
     ac_selection_behavior: bool = False,
+    staff_slot_index: int | None = None,
 ) -> LimitCheck:
     counts = Counter(card.unit_class for card in selected_cards)
     counts["total_cards"] = len(selected_cards)
     counts["staff_generals"] = 0
     counts["combat_generals"] = 0
-    for card in selected_cards:
+    counts["combat_generals_against_cap"] = 0
+    counts["staff_slot_occupants"] = 0
+
+    if staff_slot_index is not None:
+        if not 0 <= staff_slot_index < len(selected_cards):
+            raise RuleDataError("staff_slot_index is outside the selected-card list.")
+        staff_slot_card = selected_cards[staff_slot_index]
+        if staff_slot_card.faction_key != faction_key:
+            raise RuleDataError("The staff-slot card must belong to the selected faction.")
+        if not staff_slot_card.is_general:
+            raise RuleDataError("Only a General-class card can occupy the staff slot.")
+
+    for index, card in enumerate(selected_cards):
         classification = classify_general(card)
         if classification == "staff":
             counts["staff_generals"] += 1
+            counts["staff_slot_occupants"] += 1
         elif classification == "combat":
             counts["combat_generals"] += 1
+            if index == staff_slot_index:
+                counts["staff_slot_occupants"] += 1
+            else:
+                counts["combat_generals_against_cap"] += 1
 
     caps = (
         ac_selection_general_maxima(faction_key)
@@ -321,26 +354,43 @@ def check_known_limits(
         "artillery_foot": MAX_FOOT_ARTILLERY,
         "artillery_horse": MAX_HORSE_ARTILLERY,
         "cavalry_heavy": MAX_HEAVY_CAVALRY,
-        "staff_generals": caps.staff,
-        "combat_generals": caps.combat,
+        "staff_slot_occupants": caps.staff,
+        "combat_generals_against_cap": caps.combat,
     }
-    violations = tuple(
+    violations = [
         LimitViolation(rule, counts[rule], maximum)
         for rule, maximum in maxima.items()
         if counts[rule] > maximum
-    )
-    return LimitCheck(dict(counts), violations)
+    ]
+
+    cap_groups: dict[tuple[str, str], list[UnitCard]] = defaultdict(list)
+    for card in selected_cards:
+        cap_groups[(card.faction_key, card.cap_group_key)].append(card)
+    for (card_faction, group_key), cards in sorted(cap_groups.items()):
+        positive_caps = [card.cap for card in cards if card.cap > 0]
+        if not positive_caps:
+            continue
+        maximum = min(positive_caps)
+        count = len(cards)
+        rule = f"unit_cap:{card_faction}:{group_key}"
+        counts[rule] = count
+        if count > maximum:
+            violations.append(LimitViolation(rule, count, maximum))
+
+    return LimitCheck(dict(counts), tuple(violations))
 
 
 class UnitCatalog:
     def __init__(self, cards: Iterable[UnitCard]):
         self.cards = tuple(cards)
         self._by_faction_and_key: dict[tuple[str, str], UnitCard] = {}
+        self._by_faction: dict[str, list[UnitCard]] = defaultdict(list)
         for card in self.cards:
             identity = (card.faction_key, card.unit_key)
             if identity in self._by_faction_and_key:
                 raise RuleDataError(f"Duplicate recruitable row for {identity!r}.")
             self._by_faction_and_key[identity] = card
+            self._by_faction[card.faction_key].append(card)
 
     @classmethod
     def from_csv(cls, csv_path: str | Path) -> "UnitCatalog":
@@ -356,6 +406,10 @@ class UnitCatalog:
                     f"No recruitable row for {unit_key!r} in faction {faction_key!r}."
                 ) from exc
         return selected
+
+    def cards_for_faction(self, faction_key: str) -> tuple[UnitCard, ...]:
+        """Return every recruitable card without random candidate filtering."""
+        return tuple(self._by_faction.get(faction_key, ()))
 
     def calculate(self, faction_key: str, unit_keys: Sequence[str]) -> PriceResult:
         return calculate_army_cost(
