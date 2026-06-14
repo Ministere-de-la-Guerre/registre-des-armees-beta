@@ -1,0 +1,81 @@
+{
+  "name": "registre-des-armees",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "NTW3 army-builder desktop-first web app.",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "build:data": "python ../tools/build_web_data.py",
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
+    "typecheck": "tsc -b --noEmit",
+    "electron": "electron .",
+    "desktop:dir": "npm run build && electron-builder --win --dir --publish never",
+    "desktop": "npm run build && electron-builder --win --publish never",
+    "desktop:release": "npm run build && electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8",
+    "eslint": "^8.57.1",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "eslint-plugin-react-refresh": "^0.4.16",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8"
+  },
+  "build": {
+    "appId": "fr.ministeredelaguerre.registredesarmees",
+    "productName": "Registre des Armées",
+    "copyright": "Ministère de la Guerre",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Registre des Armées",
+      "artifactName": "RegistreDesArmees-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "RegistreDesArmees-Portable-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Ministere-de-la-Guerre",
+        "repo": "registre-des-armees"
+      }
+    ]
+  }
+}
