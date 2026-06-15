@@ -33,6 +33,33 @@ export function SaveLoadBar({
   const [open, setOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // In-app name prompt. Electron does not support window.prompt(), so naming a
+  // build (Save As / Rename) must go through this modal instead.
+  const [namePrompt, setNamePrompt] = useState<{
+    title: string;
+    submitLabel: string;
+    onSubmit: (value: string) => void;
+  } | null>(null);
+  const [nameValue, setNameValue] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const askName = (opts: { title: string; initial: string; submitLabel: string; onSubmit: (value: string) => void }) => {
+    setNameValue(opts.initial);
+    setNamePrompt({ title: opts.title, submitLabel: opts.submitLabel, onSubmit: opts.onSubmit });
+  };
+  const closeNamePrompt = () => setNamePrompt(null);
+  const submitNamePrompt = () => {
+    const value = nameValue.trim();
+    if (!value) return;
+    const handler = namePrompt?.onSubmit;
+    setNamePrompt(null);
+    handler?.(value);
+  };
+
+  useEffect(() => {
+    if (namePrompt) nameInputRef.current?.focus();
+  }, [namePrompt]);
+
   const refresh = () => setSaves(repo.list());
   useEffect(refresh, [repo]);
 
@@ -53,8 +80,15 @@ export function SaveLoadBar({
   };
 
   const doSaveAs = () => {
-    const name = window.prompt("Name this build:", loaded ? `${loaded.name} (copy)` : roster.armyCorpsName);
-    if (!name || !name.trim()) return;
+    askName({
+      title: "Save build as",
+      initial: loaded ? `${loaded.name} (copy)` : roster.armyCorpsName,
+      submitLabel: "Save",
+      onSubmit: saveAsName,
+    });
+  };
+
+  const saveAsName = (name: string) => {
     const existing = repo.findByName(name);
     if (existing) {
       if (!window.confirm(`A build named “${name}” already exists. Overwrite it?`)) return;
@@ -62,7 +96,7 @@ export function SaveLoadBar({
       if (persistAndReport(repo.save(saved), `Overwrote “${saved.name}”.`)) onSaved(saved);
       return;
     }
-    const saved = buildToSaved(current, { name: name.trim() });
+    const saved = buildToSaved(current, { name });
     if (persistAndReport(repo.save(saved), `Saved “${saved.name}”.`)) onSaved(saved);
   };
 
@@ -150,13 +184,17 @@ export function SaveLoadBar({
                 <button className="btn small" onClick={() => doLoad(s)}>Load</button>
                 <button
                   className="btn small"
-                  onClick={() => {
-                    const n = window.prompt("Rename build:", s.name);
-                    if (n && n.trim()) {
-                      persistAndReport(repo.rename(s.id, n.trim()), `Renamed to “${n.trim()}”.`);
-                      if (loaded?.id === s.id) onSaved({ ...s, name: n.trim() });
-                    }
-                  }}
+                  onClick={() =>
+                    askName({
+                      title: "Rename build",
+                      initial: s.name,
+                      submitLabel: "Rename",
+                      onSubmit: (n) => {
+                        persistAndReport(repo.rename(s.id, n), `Renamed to “${n}”.`);
+                        if (loaded?.id === s.id) onSaved({ ...s, name: n });
+                      },
+                    })
+                  }
                 >
                   Rename
                 </button>
@@ -180,6 +218,49 @@ export function SaveLoadBar({
               </div>
             ))
           )}
+        </div>
+      )}
+      {namePrompt && (
+        <div className="modal-backdrop" onMouseDown={closeNamePrompt}>
+          <div
+            className="modal"
+            style={{ maxWidth: 420 }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-head">
+              <strong>{namePrompt.title}</strong>
+            </div>
+            <div className="modal-body">
+              <input
+                ref={nameInputRef}
+                type="text"
+                value={nameValue}
+                onChange={(e) => setNameValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitNamePrompt();
+                  else if (e.key === "Escape") closeNamePrompt();
+                }}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "8px 10px",
+                  fontSize: 14,
+                  background: "var(--bg-2)",
+                  color: "var(--text)",
+                  border: "1px solid var(--line-2)",
+                  borderRadius: 6,
+                }}
+              />
+              <div className="modal-actions" style={{ marginTop: 12, justifyContent: "flex-end" }}>
+                <button className="btn small" onClick={closeNamePrompt}>
+                  Cancel
+                </button>
+                <button className="btn small primary" onClick={submitNamePrompt} disabled={!nameValue.trim()}>
+                  {namePrompt.submitLabel}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
