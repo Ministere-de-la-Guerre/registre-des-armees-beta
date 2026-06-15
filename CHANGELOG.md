@@ -4,6 +4,13 @@ All notable changes to the Registre des Armées desktop app are recorded here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows the version in `web/package.json`.
 
+## [1.2.0] — 2026-06-15
+
+### Fixed
+- Save and Save As now work in the desktop app. They relied on `window.prompt()`
+  to name a build, which Electron does not support (it throws), so naming a build
+  silently failed. Build naming (Save As / Rename) now uses an in-app dialog.
+
 ## [1.1.2] — 2026-06-15
 
 ### Added
@@ -61,6 +68,7 @@ project follows the version in `web/package.json`.
 - Initial beta: NTW3 army builder as a Windows desktop app (Electron) with
   GitHub-based auto-update.
 
+[1.2.0]: https://github.com/Ministere-de-la-Guerre/registre-des-armees/releases/tag/v1.2.0
 [1.1.2]: https://github.com/Ministere-de-la-Guerre/registre-des-armees/releases/tag/v1.1.2
 [1.1.1]: https://github.com/Ministere-de-la-Guerre/registre-des-armees/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Ministere-de-la-Guerre/registre-des-armees/releases/tag/v1.1.0
