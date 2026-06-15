@@ -178,16 +178,44 @@ def load_unit_cards(csv_path: str | Path) -> list[UnitCard]:
         return [UnitCard.from_csv_row(row) for row in csv.DictReader(handle)]
 
 
+def _is_combat_arm(unit_class: str) -> bool:
+    """Combat arms make a division a real combat division rather than a support
+    (artillery / sapper / skirmisher) division. Skirmishers count as support."""
+    if unit_class.startswith("cavalry"):
+        return True
+    if unit_class.startswith("infantry"):
+        return unit_class != "infantry_skirmishers"
+    return False
+
+
+def support_divisions(recruitable_cards: Iterable[UnitCard], faction_key: str) -> set[int]:
+    """Divisions made up entirely of support units (the final support division).
+    These earn no brigade/division cost discount."""
+    divisions: set[int] = set()
+    combat_divisions: set[int] = set()
+    for card in recruitable_cards:
+        if card.faction_key != faction_key or card.is_general or card.placement is None:
+            continue
+        divisions.add(card.placement.division_id)
+        if _is_combat_arm(card.unit_class):
+            combat_divisions.add(card.placement.division_id)
+    return divisions - combat_divisions
+
+
 def build_roster_totals(
     recruitable_cards: Iterable[UnitCard], faction_key: str
 ) -> tuple[dict[int, GroupTotal], dict[tuple[int, int], GroupTotal]]:
     divisions: dict[int, GroupTotal] = defaultdict(GroupTotal)
     brigades: dict[tuple[int, int], GroupTotal] = defaultdict(GroupTotal)
 
+    recruitable_cards = list(recruitable_cards)
+    support = support_divisions(recruitable_cards, faction_key)
     for card in recruitable_cards:
         if card.faction_key != faction_key or card.is_general or card.placement is None:
             continue
         division = card.placement.division_id
+        if division in support:  # support divisions earn no discount
+            continue
         brigade = card.placement.brigade_id
         divisions[division] = divisions[division].add(card)
         brigades[(division, brigade)] = brigades[(division, brigade)].add(card)

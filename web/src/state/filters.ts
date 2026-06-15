@@ -202,7 +202,15 @@ export function matchesCard(card: UnitCard, f: FilterState): boolean {
       if (!inRange(def.get(card), f.classStats[sc][def.id])) return false;
     }
   }
-  if (f.classes.length && !f.classes.includes(card.unitClass)) return false;
+  if (
+    f.classes.length &&
+    !f.classes.includes(card.unitClass) &&
+    // A combat general also matches the unit class of the unit it leads, so e.g.
+    // the Grenadiers chip surfaces grenadier-led combat generals too.
+    !(card.generalKind === "combat" && f.classes.includes(card.underlyingUnitClass))
+  ) {
+    return false;
+  }
   if (f.categories.length && !broadCategoriesOf(card).some((c) => f.categories.includes(c))) return false;
   if (f.speeds.length && (!card.speedCode || !f.speeds.includes(card.speedCode))) return false;
   if (f.divisions.length && (card.placement === null || !f.divisions.includes(card.placement.division))) return false;

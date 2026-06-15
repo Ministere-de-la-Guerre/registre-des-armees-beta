@@ -71,6 +71,22 @@ describe("ordinary filters (dimming, not removal)", () => {
     expect(matchesCard(staff, g)).toBe(true);
   });
 
+  it("unit-class filter includes combat generals by the class they lead", () => {
+    const f = { ...defaultFilters(), classes: ["infantry_grenadiers"] };
+    const grenGeneral = makeUnit({
+      unitClass: "general", underlyingUnitClass: "infantry_grenadiers",
+      isGeneral: true, generalKind: "combat",
+    });
+    const lineGeneral = makeUnit({
+      unitClass: "general", underlyingUnitClass: "infantry_line",
+      isGeneral: true, generalKind: "combat",
+    });
+    const grenUnit = makeUnit({ unitClass: "infantry_grenadiers", underlyingUnitClass: "infantry_grenadiers" });
+    expect(matchesCard(grenGeneral, f)).toBe(true); // grenadier-led combat general matches
+    expect(matchesCard(lineGeneral, f)).toBe(false); // line-led one does not
+    expect(matchesCard(grenUnit, f)).toBe(true);
+  });
+
   it("ability tri-state filters", () => {
     const f = defaultFilters();
     f.abilities.canFormSquare = "yes";

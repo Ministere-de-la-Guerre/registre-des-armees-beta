@@ -140,14 +140,19 @@ export function evaluateAdd(
     }
   }
 
-  const classCount = (cls: string) => cards.filter((c) => c.unitClass === cls).length;
-  if (card.unitClass === "artillery_foot" && classCount("artillery_foot") >= MAX_FOOT_ARTILLERY) {
+  // Combat generals count against the cap of the unit they lead (e.g. an
+  // artillery-led combat general uses an artillery slot), so count by effective class.
+  const effectiveClass = (c: UnitCard) =>
+    c.isGeneral && c.generalKind === "combat" && c.underlyingUnitClass ? c.underlyingUnitClass : c.unitClass;
+  const addedClass = effectiveClass(card);
+  const classCount = (cls: string) => cards.filter((c) => effectiveClass(c) === cls).length;
+  if (addedClass === "artillery_foot" && classCount("artillery_foot") >= MAX_FOOT_ARTILLERY) {
     return { reason: `Foot-artillery limit (${MAX_FOOT_ARTILLERY}) reached.` };
   }
-  if (card.unitClass === "artillery_horse" && classCount("artillery_horse") >= MAX_HORSE_ARTILLERY) {
+  if (addedClass === "artillery_horse" && classCount("artillery_horse") >= MAX_HORSE_ARTILLERY) {
     return { reason: `Horse-artillery limit (${MAX_HORSE_ARTILLERY}) reached.` };
   }
-  if (card.unitClass === "cavalry_heavy" && classCount("cavalry_heavy") >= MAX_HEAVY_CAVALRY) {
+  if (addedClass === "cavalry_heavy" && classCount("cavalry_heavy") >= MAX_HEAVY_CAVALRY) {
     return { reason: `Heavy-cavalry limit (${MAX_HEAVY_CAVALRY}) reached.` };
   }
 

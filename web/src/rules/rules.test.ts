@@ -13,6 +13,7 @@ import {
 interface CardOpts {
   faction?: string;
   unitClass?: string;
+  underlyingUnitClass?: string;
   menRaw?: number | null;
   division?: number | null;
   brigade?: number | null;
@@ -26,6 +27,7 @@ function card(key: string, opts: CardOpts = {}): RulesUnit {
   const {
     faction = "ntw3_ac_test_x5_001",
     unitClass = "infantry_line",
+    underlyingUnitClass,
     menRaw = 100,
     division = 1,
     brigade = 1,
@@ -43,6 +45,7 @@ function card(key: string, opts: CardOpts = {}): RulesUnit {
     cap,
     groupCap: groupCap ?? cap,
     isGeneral: unitClass === "general",
+    underlyingUnitClass: underlyingUnitClass ?? unitClass,
   };
 }
 
@@ -119,6 +122,28 @@ describe("pricing", () => {
     expect(result.finalCost).toBe(1000);
     expect(result.normalDiscount).toBe(0);
   });
+
+  it("the support division (all artillery/skirmisher) earns no discount", () => {
+    const faction = "ntw3_ac_test_x5_001";
+    const inf = card("inf", { faction, division: 1, brigade: 1, cost: 500, cap: 2 });
+    // Division 2 is a pure support division (foot artillery only).
+    const art = card("art", { faction, unitClass: "artillery_foot", division: 2, brigade: 1, cost: 100, cap: 2 });
+    const result = calculateArmyCost([inf, inf, art, art], [inf, art], faction);
+    // Only the combat division discounts; the support division contributes nothing.
+    expect(result.completedGroups).toHaveLength(1);
+    expect(result.completedGroups[0].divisionId).toBe(1);
+    expect(result.normalDiscount).toBe(10);
+  });
+
+  it("a combat division keeps its discount even with organic divisional artillery", () => {
+    const faction = "ntw3_ac_test_x5_001";
+    // Division 1 mixes infantry and a divisional battery -> still a combat division.
+    const inf = card("inf", { faction, division: 1, brigade: 1, cost: 500, cap: 1 });
+    const battery = card("bat", { faction, unitClass: "artillery_foot", division: 1, brigade: 2, cost: 100, cap: 1 });
+    const result = calculateArmyCost([inf, battery], [inf, battery], faction);
+    expect(result.completedGroups.some((g) => g.divisionId === 1)).toBe(true);
+    expect(result.normalDiscount).toBeGreaterThan(0);
+  });
 });
 
 describe("limits", () => {
@@ -139,6 +164,19 @@ describe("limits", () => {
     const rules = new Set(result.violations.map((v) => v.rule));
     expect(rules).toEqual(new Set(["artillery_foot", "artillery_horse"]));
     expect(MAX_BRIGADE_SLOTS_PER_DIVISION).toBe(7);
+  });
+
+  it("combat generals count against the artillery caps of the unit they lead", () => {
+    const faction = "france";
+    // Two foot batteries (at the cap) + a combat general leading a foot battery = 3 > 2.
+    const selected = [
+      card("foot_0", { faction, unitClass: "artillery_foot" }),
+      card("foot_1", { faction, unitClass: "artillery_foot" }),
+      card("foot_gen", { faction, unitClass: "general", underlyingUnitClass: "artillery_foot", menRaw: 80 }),
+    ];
+    const result = checkKnownLimits(selected, faction);
+    expect(result.counts.artillery_foot).toBe(3);
+    expect(result.violations.some((v) => v.rule === "artillery_foot")).toBe(true);
   });
 
   it("staff general is based only on exact raw men", () => {
