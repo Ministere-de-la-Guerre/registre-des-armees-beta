@@ -25,8 +25,8 @@ unresolved_unit_names: 0
 units_with_division_placements: 23755
 placements_from_ACDV_tags: 22812
 placements_from_verified_overrides: 8
-placements_reused_support_division: 123
-placements_created_support_division: 608
+placements_reused_support_division: 0
+placements_created_support_division: 731
 placements_inherited_base_unit: 201
 army_corps_combat_units_without_placement: 1
 resolved_speed_codes: 25656

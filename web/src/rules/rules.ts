@@ -33,6 +33,41 @@ export interface RulesUnit {
   /** Shared cap-group cap (the underlying unit's cap). Falls back to `cap`. */
   groupCap?: number;
   isGeneral: boolean;
+  /** Combat generals report their base unit's class (from the web data layer); used
+   *  so they count against the class caps of the unit they lead. */
+  underlyingUnitClass?: string;
+}
+
+/** Combat arms that make a division a real combat division rather than a support
+ *  (artillery / sapper / skirmisher) division. Skirmishers count as support. */
+function isCombatArm(unitClass: string): boolean {
+  if (unitClass.startsWith("cavalry")) return true;
+  if (unitClass.startsWith("infantry")) return unitClass !== "infantry_skirmishers";
+  return false;
+}
+
+/** Divisions made up entirely of support units (artillery/sapper/skirmisher).
+ *  These are the final "support division"; they earn no brigade/division discount. */
+export function supportDivisions(recruitable: readonly RulesUnit[], factionKey: string): Set<number> {
+  const divisions = new Set<number>();
+  const combatDivisions = new Set<number>();
+  for (const card of recruitable) {
+    if (card.factionKey !== factionKey || card.isGeneral || card.placement === null) continue;
+    divisions.add(card.placement.division);
+    if (isCombatArm(card.unitClass)) combatDivisions.add(card.placement.division);
+  }
+  const support = new Set<number>();
+  for (const division of divisions) if (!combatDivisions.has(division)) support.add(division);
+  return support;
+}
+
+/** Class used for the artillery/heavy-cavalry caps: combat generals occupy a slot
+ *  of the unit they lead, so they count by their underlying class. */
+function cappedClassOf(card: RulesUnit): string {
+  if (card.isGeneral && card.underlyingUnitClass && classifyGeneral(card) === "combat") {
+    return card.underlyingUnitClass;
+  }
+  return card.unitClass;
 }
 
 export interface GroupTotal {
@@ -106,9 +141,11 @@ export function buildRosterTotals(
 ): { divisions: Map<number, GroupTotal>; brigades: Map<string, GroupTotal> } {
   const divisions = new Map<number, GroupTotal>();
   const brigades = new Map<string, GroupTotal>();
+  const support = supportDivisions(recruitable, factionKey);
   for (const card of recruitable) {
     if (card.factionKey !== factionKey || card.isGeneral || card.placement === null) continue;
     const { division, brigade } = card.placement;
+    if (support.has(division)) continue; // support divisions earn no discount
     divisions.set(division, addToGroup(divisions.get(division), card));
     const bkey = `${division}:${brigade}`;
     brigades.set(bkey, addToGroup(brigades.get(bkey), card));
@@ -261,6 +298,12 @@ export function checkKnownLimits(
   const counts: Record<string, number> = {};
   for (const card of selected) {
     counts[card.unitClass] = (counts[card.unitClass] ?? 0) + 1;
+  }
+  // The capped classes count combat generals against the slot of the unit they
+  // lead (an artillery-led combat general consumes an artillery slot), so recount
+  // them by underlying class on top of the raw per-class tallies above.
+  for (const cls of ["artillery_foot", "artillery_horse", "cavalry_heavy"]) {
+    counts[cls] = selected.filter((c) => cappedClassOf(c) === cls).length;
   }
   counts.total_cards = selected.length;
   counts.staff_generals = 0;

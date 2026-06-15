@@ -227,12 +227,18 @@ def infer_final_division_placements(output: pd.DataFrame) -> dict[str, list[str]
         placed["__division_number"] = pd.to_numeric(placed["division_id"], errors="coerce")
         max_tagged = int(placed["__division_number"].max())
 
-        # Is the highest tagged division already an artillery/support division?
+        # Is the highest tagged division *itself* an artillery/support division?
+        # It must be made up ENTIRELY of support units (no combat infantry/cavalry):
+        # a combat division that merely carries some divisional artillery (e.g. Junot's
+        # cavalry division with an organic horse battery) is NOT the support division —
+        # its untagged reserve artillery belongs in a new division after it, not merged
+        # in. `final_division_category` returns "" for combat arms.
         final_rows = placed.loc[placed["__division_number"] == max_tagged].copy()
         final_categories = {final_division_category(row) for _, row in final_rows.iterrows()}
         final_has_artillery = bool(final_categories & {"foot_artillery", "horse_artillery"})
+        final_is_support_only = bool(final_categories) and "" not in final_categories
 
-        if final_has_artillery:
+        if final_is_support_only and final_has_artillery:
             target_division = max_tagged
             source = "inferred_existing_support_division"
             report["reused_support_division"].append(f"{faction}: division {target_division}")

@@ -53,8 +53,52 @@ class DivisionPlacementTests(unittest.TestCase):
         # The 8-pound foot battery's combat-general variant is placed with its battery.
         self.assertEqual(rows["ntw3_art_foot_080_006_0209_com_0308"]["division_brigade_code"], "ACDV5B1")
 
-    def test_existing_support_division_is_reused_somewhere(self) -> None:
-        self.assertTrue(any(r["placement_source"] == "inferred_existing_support_division" for r in self.rows))
+    @staticmethod
+    def _is_combat_arm(unit_class: str) -> bool:
+        if unit_class.startswith("cavalry"):
+            return True
+        if unit_class.startswith("infantry"):
+            return unit_class != "infantry_skirmishers"
+        return False
+
+    def test_inferred_support_never_merges_into_a_combat_division(self) -> None:
+        # Regression (1812 7. Junot): untagged reserve/support artillery must form its
+        # own support division, never get merged into a real combat division — even
+        # when that division carries some organic (divisional) artillery. A "combat
+        # division" is one holding a game-tagged (non-inferred) combat-arm card.
+        support_sources = {
+            "inferred_new_support_division",
+            "inferred_existing_support_division",
+            "reserve_support_division",
+        }
+        combat_divisions: dict[str, set[str]] = {}
+        for r in self.rows:
+            if r["is_general"] == "true" or not r["division_id"]:
+                continue
+            if r["placement_source"] in support_sources:
+                continue  # only game-tagged combat units define a combat division
+            if self._is_combat_arm(r["unit_class"]):
+                combat_divisions.setdefault(r["faction_key"], set()).add(r["division_id"])
+        offenders = [
+            (r["faction_key"], r["unit_key"], r["division_brigade_code"])
+            for r in self.rows
+            if r["placement_source"] in support_sources
+            and r["division_id"] in combat_divisions.get(r["faction_key"], set())
+        ]
+        self.assertEqual(offenders, [])
+
+    def test_junot_reserve_artillery_forms_separate_support_division(self) -> None:
+        corps = self.corps("ntw3_ac_a11_x5_124")
+        self.assertTrue(corps)
+        reserve = [r for r in corps if r["placement_source"] == "inferred_new_support_division"]
+        self.assertTrue(reserve, "Junot's untagged reserve artillery should create a new support division")
+        combat_divs = [
+            int(r["division_id"])
+            for r in corps
+            if r["division_id"] and r["is_general"] != "true" and self._is_combat_arm(r["unit_class"])
+        ]
+        support_div = int(reserve[0]["division_id"])
+        self.assertGreater(support_div, max(combat_divs))
 
     def test_artillery_commanders_inherit_their_base_placement(self) -> None:
         by_key = {(r["faction_key"], r["unit_key"]): r for r in self.rows}
