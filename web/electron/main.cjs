@@ -111,6 +111,11 @@ function createWindow() {
 function setupAutoUpdates() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  // Also pick up releases marked "Pre-release" on GitHub (we ship as pre-releases).
+  // NOTE: this only helps clients already running a build that has this flag — a
+  // client must update *to* such a build (via a full release or a manual install)
+  // once before pre-release auto-updates start reaching it.
+  autoUpdater.allowPrerelease = true;
 
   autoUpdater.on("update-downloaded", async (info) => {
     const { response } = await dialog.showMessageBox({
