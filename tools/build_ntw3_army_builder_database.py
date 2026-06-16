@@ -149,6 +149,23 @@ def final_division_category(row: pd.Series) -> str:
     return ""
 
 
+def _row_is_guerrilla(row: pd.Series) -> bool:
+    return text_value(row.get("has_guerrilla_deployment")).casefold() == "true"
+
+
+def _support_brigade(category: str, is_guerrilla: bool, category_brigades: dict[str, int]) -> int:
+    """Pick the support-division brigade for a card. Guerrilla artillery sits in
+    its own brigade, separate from non-guerrilla artillery of the same type — the
+    game never mixes guerrilla and non-guerrilla artillery in a single brigade.
+    Specialists (skirmishers/sappers/marines) are NOT split: the game does mix
+    guerrilla and non-guerrilla infantry-type units within a brigade."""
+    if is_guerrilla and category == "foot_artillery":
+        return category_brigades["specialists"] + 1
+    if is_guerrilla and category == "horse_artillery":
+        return category_brigades["specialists"] + 2
+    return category_brigades[category]
+
+
 def _set_placement(
     output: pd.DataFrame, index: object, division_id: int, brigade_id: int, source: str
 ) -> None:
@@ -202,16 +219,20 @@ def infer_final_division_placements(output: pd.DataFrame) -> dict[str, list[str]
         # reserve division out. It is displayed after the combat divisions (the
         # web remap sorts division 0 last). Divisional artillery tagged into a combat
         # division (e.g. ACDV4B4) is untouched and stays with its division.
+        # Guerrilla artillery splits into its own brigade (foot=4, horse=5); see
+        # _support_brigade.
         reserve_brigades = {"foot_artillery": 1, "horse_artillery": 2, "specialists": 3}
         div0 = corps.loc[(corps["division_id"] == "0") & (corps["is_general"] != "true")]
         if not div0.empty:
             for index, row in div0.iterrows():
                 category = final_division_category(row)
                 if category:
-                    _set_placement(output, index, 0, reserve_brigades[category], "reserve_support_division")
+                    brigade = _support_brigade(category, _row_is_guerrilla(row), reserve_brigades)
+                    _set_placement(output, index, 0, brigade, "reserve_support_division")
             for index, row in unresolved_support:
                 category = final_division_category(row)
-                _set_placement(output, index, 0, reserve_brigades[category], "reserve_support_division")
+                brigade = _support_brigade(category, _row_is_guerrilla(row), reserve_brigades)
+                _set_placement(output, index, 0, brigade, "reserve_support_division")
             report["reused_support_division"].append(f"{faction}: division 0 (reserve)")
             continue
 
@@ -260,7 +281,8 @@ def infer_final_division_placements(output: pd.DataFrame) -> dict[str, list[str]
 
         for index, row in unresolved_support:
             category = final_division_category(row)
-            _set_placement(output, index, target_division, category_brigades[category], source)
+            brigade = _support_brigade(category, _row_is_guerrilla(row), category_brigades)
+            _set_placement(output, index, target_division, brigade, source)
 
     return report
 

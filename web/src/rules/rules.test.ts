@@ -20,6 +20,8 @@ interface CardOpts {
   cost?: number;
   cap?: number;
   groupCap?: number;
+  name?: string;
+  placementSource?: string;
 }
 
 // Mirror of the `card(...)` helper in tools/tests/test_army_builder_rules.py.
@@ -34,6 +36,8 @@ function card(key: string, opts: CardOpts = {}): RulesUnit {
     cost = 100,
     cap = 1,
     groupCap,
+    name,
+    placementSource,
   } = opts;
   return {
     unitKey: key,
@@ -46,6 +50,8 @@ function card(key: string, opts: CardOpts = {}): RulesUnit {
     groupCap: groupCap ?? cap,
     isGeneral: unitClass === "general",
     underlyingUnitClass: underlyingUnitClass ?? unitClass,
+    name,
+    placementSource,
   };
 }
 
@@ -133,6 +139,61 @@ describe("pricing", () => {
     expect(result.completedGroups).toHaveLength(1);
     expect(result.completedGroups[0].divisionId).toBe(1);
     expect(result.normalDiscount).toBe(10);
+  });
+
+  it("a support division with a sapper (line-classed) earns no discount", () => {
+    const faction = "ntw3_ac_test_x5_001";
+    const inf = card("inf", { faction, division: 1, brigade: 1, cost: 500, cap: 2 });
+    // Division 2 = support division: artillery + a sapper classed as grenadier infantry.
+    const art = card("art", { faction, unitClass: "artillery_foot", division: 2, brigade: 1, cost: 100, cap: 2 });
+    const sapper = card("ntw3_inf_line_test_sap", {
+      faction,
+      unitClass: "infantry_grenadiers",
+      division: 2,
+      brigade: 2,
+      cost: 100,
+      cap: 2,
+      name: "Sapeurs [G4]",
+    });
+    const result = calculateArmyCost([inf, inf, art, art, sapper, sapper], [inf, art, sapper], faction);
+    // Only the combat division discounts; the support division contributes nothing.
+    expect(result.completedGroups.map((g) => g.divisionId)).toEqual([1]);
+    expect(result.normalDiscount).toBe(10);
+  });
+
+  it("a skirmisher-only combat division keeps its discount (native warriors)", () => {
+    const faction = "ntw3_ac_test_x5_001";
+    // Pure-skirmisher division with no artillery -> a real combat division.
+    const warriors = card("warriors", {
+      faction,
+      unitClass: "infantry_skirmishers",
+      division: 1,
+      brigade: 1,
+      cost: 300,
+      cap: 2,
+      name: "Mohawk [GS3]",
+    });
+    const result = calculateArmyCost([warriors, warriors], [warriors], faction);
+    expect(result.normalDiscount).toBe(6);
+    expect(result.completedGroups[0].divisionId).toBe(1);
+  });
+
+  it("a builder-designated specialist reserve earns no discount", () => {
+    const faction = "ntw3_ac_test_x5_001";
+    // Inferred support reserve of loose skirmishers with no artillery.
+    const skirm = card("skirm", {
+      faction,
+      unitClass: "infantry_skirmishers",
+      division: 2,
+      brigade: 1,
+      cost: 300,
+      cap: 2,
+      name: "Voltigeurs [S2]",
+      placementSource: "inferred_new_support_division",
+    });
+    const result = calculateArmyCost([skirm, skirm], [skirm], faction);
+    expect(result.normalDiscount).toBe(0);
+    expect(result.completedGroups).toHaveLength(0);
   });
 
   it("a combat division keeps its discount even with organic divisional artillery", () => {
