@@ -29,6 +29,8 @@ def card(
     cost: int = 100,
     cap: int = 1,
     men_display: int | None = None,
+    unit_name: str = "",
+    placement_source: str = "",
 ) -> UnitCard:
     return UnitCard(
         unit_key=key,
@@ -44,6 +46,8 @@ def card(
         cap=cap,
         is_general=unit_class == "general",
         men_display=men_display,
+        unit_name=unit_name,
+        placement_source=placement_source,
     )
 
 
@@ -128,6 +132,51 @@ class PricingTests(unittest.TestCase):
         result = calculate_army_cost([unit, unit], [unit], "france")
         self.assertEqual(result.final_cost, 1000)
         self.assertEqual(result.normal_discount, 0)
+
+    def test_support_division_with_sapper_earns_no_discount(self) -> None:
+        # Sappers are classed as line/grenadier infantry but belong to the final
+        # support division, which must earn no brigade/division discount.
+        faction = "ntw3_ac_test_x5_001"
+        inf = card("inf", faction=faction, division=1, brigade=1, cost=500, cap=2)
+        # Division 2 = the support division: artillery + a sapper unit (inf class).
+        art = card(
+            "art", faction=faction, unit_class="artillery_foot",
+            division=2, brigade=1, cost=100, cap=2,
+        )
+        sapper = card(
+            "ntw3_inf_line_test_sap", faction=faction, unit_class="infantry_grenadiers",
+            division=2, brigade=2, cost=100, cap=2, unit_name="Sapeurs [G4]",
+        )
+        roster = [inf, art, sapper]
+        result = calculate_army_cost([inf, inf, art, art, sapper, sapper], roster, faction)
+        # Only the combat division discounts; division 2 contributes nothing.
+        self.assertEqual([g.division_id for g in result.completed_groups], [1])
+        self.assertEqual(result.normal_discount, 10)
+
+    def test_skirmisher_only_combat_division_keeps_discount(self) -> None:
+        # A division of pure skirmishers with no artillery (e.g. native warriors)
+        # is a real combat division, NOT the artillery support reserve.
+        faction = "ntw3_ac_test_x5_001"
+        warriors = card(
+            "warriors", faction=faction, unit_class="infantry_skirmishers",
+            division=1, brigade=1, cost=300, cap=2, unit_name="Mohawk [GS3]",
+        )
+        result = calculate_army_cost([warriors, warriors], [warriors], faction)
+        self.assertEqual(result.normal_discount, 6)
+        self.assertEqual(result.completed_groups[0].division_id, 1)
+
+    def test_builder_designated_specialist_reserve_earns_no_discount(self) -> None:
+        # The builder can infer a support division of loose specialists with no
+        # artillery; placement_source marks it, so it must earn no discount.
+        faction = "ntw3_ac_test_x5_001"
+        skirm = card(
+            "skirm", faction=faction, unit_class="infantry_skirmishers",
+            division=2, brigade=1, cost=300, cap=2, unit_name="Voltigeurs [S2]",
+            placement_source="inferred_new_support_division",
+        )
+        result = calculate_army_cost([skirm, skirm], [skirm], faction)
+        self.assertEqual(result.normal_discount, 0)
+        self.assertEqual(result.completed_groups, ())
 
 
 class LimitTests(unittest.TestCase):

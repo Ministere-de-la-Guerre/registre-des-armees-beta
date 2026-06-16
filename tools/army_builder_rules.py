@@ -14,6 +14,27 @@ ACDV_RE = re.compile(r"^ACDV(?P<division>\d+)B(?P<brigade>\d+)$")
 TRAILING_DIGITS_RE = re.compile(r"(?P<number>\d+)$")
 COMMANDER_SUFFIX_RE = re.compile(r"_com_\d+$")
 
+# Sapper / marine name detection — these are support specialists even though the
+# game classes them as line/grenadier infantry. Keep in parity with SAPPER_RE /
+# MARINE_RE in tools/build_ntw3_army_builder_database.py.
+SAPPER_RE = re.compile(
+    r"sappers?|sapeurs?|sappeurs?|sap[eé]ri|saper|pioniere|pionier|pioneers?|"
+    r"engineers?|ingenj[oö]r|artificers?|artífices|zapadores|gastadores",
+    re.IGNORECASE,
+)
+MARINE_RE = re.compile(r"marins?|marines?", re.IGNORECASE)
+
+# Placement provenance values that mark a card as belonging to the final support /
+# reserve division (set by infer_final_division_placements in the builder). A
+# division holding any such card is a support division regardless of its unit mix.
+SUPPORT_PLACEMENT_SOURCES = frozenset(
+    {
+        "inferred_new_support_division",
+        "inferred_existing_support_division",
+        "reserve_support_division",
+    }
+)
+
 MAX_TOTAL_UNIT_CARDS = 31
 MAX_FOOT_ARTILLERY = 2
 MAX_HORSE_ARTILLERY = 1
@@ -42,6 +63,8 @@ class UnitCard:
     cap: int
     is_general: bool
     men_display: int | None = None
+    unit_name: str = ""
+    placement_source: str = ""
 
     @classmethod
     def from_csv_row(cls, row: Mapping[str, str]) -> "UnitCard":
@@ -67,6 +90,8 @@ class UnitCard:
             cap=_required_int(row.get("unit_cap", ""), "unit_cap", unit_key),
             is_general=is_general,
             men_display=_optional_int(row.get("men_display", ""), "men_display", unit_key),
+            unit_name=row.get("unit_name", "").strip(),
+            placement_source=row.get("placement_source", "").strip(),
         )
 
     @property
@@ -178,28 +203,71 @@ def load_unit_cards(csv_path: str | Path) -> list[UnitCard]:
         return [UnitCard.from_csv_row(row) for row in csv.DictReader(handle)]
 
 
-def _is_combat_arm(unit_class: str) -> bool:
-    """Combat arms make a division a real combat division rather than a support
-    (artillery / sapper / skirmisher) division. Skirmishers count as support."""
-    if unit_class.startswith("cavalry"):
+def _is_support_unit(card: UnitCard) -> bool:
+    """Support arms (artillery / skirmisher / sapper / marine) do NOT make a
+    division a combat division. Sappers and marines are support specialists even
+    though the game classes them as line/grenadier infantry, so they are matched
+    by name. Mirrors final_division_category in
+    tools/build_ntw3_army_builder_database.py — keep in parity."""
+    unit_key = card.unit_key
+    unit_class = card.unit_class
+    if unit_key.startswith(("ntw3_art_foot_", "ntw3_art_fixed_")) or unit_class in {
+        "artillery_foot",
+        "artillery_fixed",
+    }:
         return True
-    if unit_class.startswith("infantry"):
-        return unit_class != "infantry_skirmishers"
+    if unit_key.startswith("ntw3_art_horse_") or unit_class == "artillery_horse":
+        return True
+    if (
+        unit_key.startswith("ntw3_inf_skirm_")
+        or unit_class == "infantry_skirmishers"
+        or SAPPER_RE.search(card.unit_name)
+        or MARINE_RE.search(card.unit_name)
+    ):
+        return True
     return False
 
 
+def _is_combat_arm(card: UnitCard) -> bool:
+    """Combat arms make a division a real combat division rather than a support
+    (artillery / sapper / skirmisher / marine) division."""
+    return not _is_support_unit(card)
+
+
+def _is_artillery(card: UnitCard) -> bool:
+    return card.unit_key.startswith(
+        ("ntw3_art_foot_", "ntw3_art_fixed_", "ntw3_art_horse_")
+    ) or card.unit_class in {"artillery_foot", "artillery_fixed", "artillery_horse"}
+
+
 def support_divisions(recruitable_cards: Iterable[UnitCard], faction_key: str) -> set[int]:
-    """Divisions made up entirely of support units (the final support division).
-    These earn no brigade/division cost discount."""
+    """Divisions that earn no brigade/division cost discount: the final artillery
+    support / reserve division.
+
+    A division qualifies when either (a) every unit is a support arm AND it holds
+    artillery (a real artillery reserve), or (b) the builder designated it the
+    support division via placement_source. Both are needed: (a) catches fully
+    source-tagged artillery reserves the builder never had to infer, while (b)
+    catches builder-inferred reserves of loose specialists (skirmishers/sappers)
+    that hold no artillery. A combat division of pure skirmishers (e.g. native
+    warriors) matches neither, so it keeps its discount."""
     divisions: set[int] = set()
     combat_divisions: set[int] = set()
+    artillery_divisions: set[int] = set()
+    designated_support: set[int] = set()
     for card in recruitable_cards:
         if card.faction_key != faction_key or card.is_general or card.placement is None:
             continue
-        divisions.add(card.placement.division_id)
-        if _is_combat_arm(card.unit_class):
-            combat_divisions.add(card.placement.division_id)
-    return divisions - combat_divisions
+        division = card.placement.division_id
+        divisions.add(division)
+        if _is_combat_arm(card):
+            combat_divisions.add(division)
+        if _is_artillery(card):
+            artillery_divisions.add(division)
+        if card.placement_source in SUPPORT_PLACEMENT_SOURCES:
+            designated_support.add(division)
+    artillery_reserves = (divisions - combat_divisions) & artillery_divisions
+    return artillery_reserves | designated_support
 
 
 def build_roster_totals(

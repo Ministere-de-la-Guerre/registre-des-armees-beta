@@ -7,6 +7,22 @@
 const TRAILING_DIGITS_RE = /(\d+)$/;
 const COMMANDER_SUFFIX_RE = /_com_\d+$/;
 
+// Sapper / marine name detection — these are support specialists even though the
+// game classes them as line/grenadier infantry. Keep in parity with SAPPER_RE /
+// MARINE_RE in tools/build_ntw3_army_builder_database.py and army_builder_rules.py.
+const SAPPER_RE =
+  /sappers?|sapeurs?|sappeurs?|sap[eé]ri|saper|pioniere|pionier|pioneers?|engineers?|ingenj[oö]r|artificers?|artífices|zapadores|gastadores/i;
+const MARINE_RE = /marins?|marines?/i;
+
+// Placement provenance values that mark a card as belonging to the final support /
+// reserve division (set by infer_final_division_placements in the builder). A
+// division holding any such card is a support division regardless of its unit mix.
+const SUPPORT_PLACEMENT_SOURCES = new Set([
+  "inferred_new_support_division",
+  "inferred_existing_support_division",
+  "reserve_support_division",
+]);
+
 export const MAX_TOTAL_UNIT_CARDS = 31;
 export const MAX_BUILD_COST = 10000;
 export const MAX_FOOT_ARTILLERY = 2;
@@ -36,28 +52,84 @@ export interface RulesUnit {
   /** Combat generals report their base unit's class (from the web data layer); used
    *  so they count against the class caps of the unit they lead. */
   underlyingUnitClass?: string;
+  /** Display name — used to detect sapper/marine support specialists by name. */
+  name?: string;
+  /** Builder provenance for the division/brigade placement; flags the final
+   *  support/reserve division (see SUPPORT_PLACEMENT_SOURCES). */
+  placementSource?: string | null;
 }
 
-/** Combat arms that make a division a real combat division rather than a support
- *  (artillery / sapper / skirmisher) division. Skirmishers count as support. */
-function isCombatArm(unitClass: string): boolean {
-  if (unitClass.startsWith("cavalry")) return true;
-  if (unitClass.startsWith("infantry")) return unitClass !== "infantry_skirmishers";
-  return false;
+/** Support arms (artillery / skirmisher / sapper / marine) that do NOT make a
+ *  division a combat division. Sappers and marines are support specialists even
+ *  though the game classes them as line/grenadier infantry, so they are matched
+ *  by name. Mirrors final_division_category in
+ *  tools/build_ntw3_army_builder_database.py — keep in parity. */
+function isSupportUnit(card: RulesUnit): boolean {
+  const { unitKey, unitClass } = card;
+  if (
+    unitKey.startsWith("ntw3_art_foot_") ||
+    unitKey.startsWith("ntw3_art_fixed_") ||
+    unitClass === "artillery_foot" ||
+    unitClass === "artillery_fixed"
+  ) {
+    return true;
+  }
+  if (unitKey.startsWith("ntw3_art_horse_") || unitClass === "artillery_horse") return true;
+  const name = card.name ?? "";
+  return (
+    unitKey.startsWith("ntw3_inf_skirm_") ||
+    unitClass === "infantry_skirmishers" ||
+    SAPPER_RE.test(name) ||
+    MARINE_RE.test(name)
+  );
 }
 
-/** Divisions made up entirely of support units (artillery/sapper/skirmisher).
- *  These are the final "support division"; they earn no brigade/division discount. */
+/** Combat arms make a division a real combat division rather than a support
+ *  (artillery / sapper / skirmisher / marine) division. */
+function isCombatArm(card: RulesUnit): boolean {
+  return !isSupportUnit(card);
+}
+
+function isArtillery(card: RulesUnit): boolean {
+  const { unitKey, unitClass } = card;
+  return (
+    unitKey.startsWith("ntw3_art_foot_") ||
+    unitKey.startsWith("ntw3_art_fixed_") ||
+    unitKey.startsWith("ntw3_art_horse_") ||
+    unitClass === "artillery_foot" ||
+    unitClass === "artillery_fixed" ||
+    unitClass === "artillery_horse"
+  );
+}
+
+/** Divisions that earn no brigade/division cost discount: the final artillery
+ *  support / reserve division. A division qualifies when either (a) every unit is
+ *  a support arm AND it holds artillery (a real artillery reserve), or (b) the
+ *  builder designated it the support division via placementSource. Both are
+ *  needed: (a) catches fully source-tagged artillery reserves the builder never
+ *  had to infer; (b) catches builder-inferred reserves of loose specialists
+ *  (skirmishers/sappers) that hold no artillery. A combat division of pure
+ *  skirmishers (e.g. native warriors) matches neither, so it keeps its discount.
+ *  Mirrors support_divisions in tools/army_builder_rules.py — keep in parity. */
 export function supportDivisions(recruitable: readonly RulesUnit[], factionKey: string): Set<number> {
   const divisions = new Set<number>();
   const combatDivisions = new Set<number>();
+  const artilleryDivisions = new Set<number>();
+  const designatedSupport = new Set<number>();
   for (const card of recruitable) {
     if (card.factionKey !== factionKey || card.isGeneral || card.placement === null) continue;
-    divisions.add(card.placement.division);
-    if (isCombatArm(card.unitClass)) combatDivisions.add(card.placement.division);
+    const { division } = card.placement;
+    divisions.add(division);
+    if (isCombatArm(card)) combatDivisions.add(division);
+    if (isArtillery(card)) artilleryDivisions.add(division);
+    if (card.placementSource && SUPPORT_PLACEMENT_SOURCES.has(card.placementSource)) {
+      designatedSupport.add(division);
+    }
   }
-  const support = new Set<number>();
-  for (const division of divisions) if (!combatDivisions.has(division)) support.add(division);
+  const support = new Set<number>(designatedSupport);
+  for (const division of divisions) {
+    if (!combatDivisions.has(division) && artilleryDivisions.has(division)) support.add(division);
+  }
   return support;
 }
 
