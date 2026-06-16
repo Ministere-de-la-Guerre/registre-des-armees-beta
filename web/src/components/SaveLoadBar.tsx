@@ -63,6 +63,9 @@ export function SaveLoadBar({
   const refresh = () => setSaves(repo.list());
   useEffect(refresh, [repo]);
 
+  // Only surface builds saved for the corps currently open.
+  const corpsSaves = saves.filter((s) => s.factionKey === roster.factionKey);
+
   const persistAndReport = (result: { ok: boolean; error?: string }, okMsg: string) => {
     refresh();
     onMessage(result.ok ? okMsg : `Not saved: ${result.error ?? "storage error"}.`);
@@ -169,16 +172,15 @@ export function SaveLoadBar({
           {!repo.persistent && (
             <div className="saves-warning">Storage unavailable — saves will not persist this session.</div>
           )}
-          {saves.length === 0 ? (
-            <div style={{ padding: 10, fontSize: 13, color: "var(--text-soft)" }}>No saved builds yet.</div>
+          {corpsSaves.length === 0 ? (
+            <div style={{ padding: 10, fontSize: 13, color: "var(--text-soft)" }}>No saved builds for this corps yet.</div>
           ) : (
-            saves.map((s) => (
+            corpsSaves.map((s) => (
               <div className="saves-row" key={s.id}>
                 <div style={{ flex: 1, fontSize: 13 }}>
                   <strong>{s.name}</strong>
                   <div style={{ fontSize: 11, color: "var(--text-soft)" }}>
                     {s.armyCorpsName || s.factionKey} · {new Date(s.updatedAt).toLocaleString()}
-                    {s.factionKey !== roster.factionKey ? " · other corps" : ""}
                   </div>
                 </div>
                 <button className="btn small" onClick={() => doLoad(s)}>Load</button>

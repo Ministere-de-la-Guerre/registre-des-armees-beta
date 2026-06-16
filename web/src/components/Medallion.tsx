@@ -59,7 +59,9 @@ export function Medallion({
   const [failed, setFailed] = useState(false);
   const icon = assetUrl(card.icon);
   const badge = assetUrl(card.guerrillaBadge);
-  const capShown = capCount ?? qty;
+  // A general occupying the staff slot is tracked separately from instance qty,
+  // so count it as one taken to show e.g. 1/1 instead of 0/1 once selected.
+  const capShown = inStaffSlot ? Math.max(capCount ?? qty, 1) : capCount ?? qty;
 
   return (
     <div

@@ -4,6 +4,16 @@ All notable changes to the Registre des Armées desktop app are recorded here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and the
 project follows the version in `web/package.json`.
 
+## [1.2.1] — 2026-06-15
+
+### Changed
+- The Load menu now lists only builds saved for the corps currently open, instead
+  of every saved build across all corps.
+
+### Fixed
+- A staff general now shows 1/1 on its cap badge once placed in the staff slot,
+  instead of remaining 0/1.
+
 ## [1.2.0] — 2026-06-15
 
 ### Fixed
@@ -68,6 +78,7 @@ project follows the version in `web/package.json`.
 - Initial beta: NTW3 army builder as a Windows desktop app (Electron) with
   GitHub-based auto-update.
 
+[1.2.1]: https://github.com/Ministere-de-la-Guerre/registre-des-armees/releases/tag/v1.2.1
 [1.2.0]: https://github.com/Ministere-de-la-Guerre/registre-des-armees/releases/tag/v1.2.0
 [1.1.2]: https://github.com/Ministere-de-la-Guerre/registre-des-armees/releases/tag/v1.1.2
 [1.1.1]: https://github.com/Ministere-de-la-Guerre/registre-des-armees/releases/tag/v1.1.1
