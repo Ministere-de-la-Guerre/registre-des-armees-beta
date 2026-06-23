@@ -201,7 +201,7 @@ export function RotationModal({
 
           {offeredNow && (
             <details className="rot-debug">
-              <summary>Verify: offered right now ({offeredNow.window})</summary>
+              <summary>Offered right now ({offeredNow.window})</summary>
               <div className="rot-debug-body">
                 <div>
                   <strong>Combat generals:</strong>{" "}
