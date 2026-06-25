@@ -139,7 +139,7 @@ export function RotationModal({
       >
         <div className="modal-head">
           <div>
-            <h3 style={{ color: "var(--gold-bright)" }}>⏱ General rotation</h3>
+            <h3 style={{ color: "var(--gold-bright)" }}>General rotation</h3>
             <div style={{ fontSize: 12, opacity: 0.85 }}>
               Nearest local time you can recruit each selected combat &amp; staff general
             </div>

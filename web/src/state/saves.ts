@@ -175,9 +175,14 @@ export class BuildRepository {
     return this.list().find((b) => b.id === id);
   }
 
-  findByName(name: string): SavedBuild | undefined {
+  /** Find a saved build by (case-insensitive) name. When `factionKey` is given the
+   *  search is restricted to that corps, so two different corps can each keep a
+   *  build of the same name without one's Save As overwriting the other's. */
+  findByName(name: string, factionKey?: string): SavedBuild | undefined {
     const lc = name.trim().toLowerCase();
-    return this.list().find((b) => b.name.trim().toLowerCase() === lc);
+    return this.list().find(
+      (b) => b.name.trim().toLowerCase() === lc && (factionKey === undefined || b.factionKey === factionKey),
+    );
   }
 
   private writeAll(builds: SavedBuild[]): StorageResult {

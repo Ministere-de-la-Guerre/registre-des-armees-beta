@@ -43,6 +43,23 @@ describe("BuildRepository", () => {
     expect(repo.findByName("Beta")).toBeUndefined();
   });
 
+  it("findByName scopes by corps so two corps can share a build name", () => {
+    const repo = new BuildRepository(new MemoryStorageAdapter());
+    const corpsA: CurrentBuild = { ...current(build(["a"])), factionKey: "ntw3_ac_aaa_x5_001", armyCorpsName: "A" };
+    const corpsB: CurrentBuild = { ...current(build(["b"])), factionKey: "ntw3_ac_bbb_x5_001", armyCorpsName: "B" };
+    repo.save(buildToSaved(corpsA, { name: "Shared" }));
+    repo.save(buildToSaved(corpsB, { name: "Shared" }));
+    // Both builds coexist, each pointing at its own corps.
+    expect(repo.list()).toHaveLength(2);
+    const a = repo.findByName("Shared", "ntw3_ac_aaa_x5_001");
+    const b = repo.findByName("Shared", "ntw3_ac_bbb_x5_001");
+    expect(a?.factionKey).toBe("ntw3_ac_aaa_x5_001");
+    expect(a?.instances).toEqual(["a"]);
+    expect(b?.factionKey).toBe("ntw3_ac_bbb_x5_001");
+    expect(b?.instances).toEqual(["b"]);
+    expect(a?.id).not.toBe(b?.id);
+  });
+
   it("updating an existing named build keeps its id and created time", () => {
     const repo = new BuildRepository(new MemoryStorageAdapter());
     const first = buildToSaved(current(build(["a"])), { name: "Build" });

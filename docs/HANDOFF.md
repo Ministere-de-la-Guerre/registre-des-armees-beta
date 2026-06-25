@@ -136,7 +136,12 @@ The app code lives in `web/src/`.
 - `rules/rules.ts`: TypeScript rules engine. It is a parity port of
   `tools/army_builder_rules.py`; keep them behaviorally aligned.
 - `state/build.ts`: selected build model, add-blocking, soft-budget pricing,
-  auto combat-general replacement, reset logic, and summary derivation.
+  auto combat-general replacement, reset logic, and summary derivation. The
+  summary's `totalInfantry` (denominator of the header "Squares" stat,
+  `squares/infantry`) counts every selected infantry class except skirmishers —
+  line, light, grenadiers, militia, irregulars — with combat generals classed by
+  the unit they lead (`underlyingUnitClass`); cavalry, artillery and staff
+  generals are excluded.
 - `state/filters.ts`: filter model and matching.
 - `state/ordering.ts`: unit-card ordering within staff/brigade groups.
 - `state/saves.ts`: versioned save/load repository.
@@ -154,7 +159,7 @@ Data flow:
 4. `Builder` indexes the roster with `indexRoster()`.
 5. User selections mutate a `BuildState`.
 6. `summarize()` expands state into selected cards, price, limits, men, squares,
-   and violation messages.
+   infantry total, and violation messages.
 7. Components display derived state only; rule math should stay in `rules/` and
    `state/`.
 
@@ -400,7 +405,7 @@ while leaving the staff slot untouched.
 ## Combat & Staff General Rotation Predictor
 
 `web/src/state/rotation.ts` (+ `rotation.test.ts`) and
-`web/src/components/RotationModal.tsx` implement the "⏱ General times" popup
+`web/src/components/RotationModal.tsx` implement the "General times" popup
 (opened from a button in the `Builder` header). For each combat general in the
 build and the staff-slot commander, it shows the nearest local time (past or
 future) the game offers them in that corps's clock-seeded rotation.
@@ -456,8 +461,18 @@ math while improving display labels.
 ## Filtering and Ordering
 
 Filters in `state/filters.ts` mostly dim non-matching cards instead of hiding
-them. The exception is the combat-general visibility switch, which removes combat
-generals from the grid when off.
+them. There are two exceptions, both of which *remove* cards from the grid:
+
+- The combat-general visibility switch (`showCombatGenerals`, "Combat generals"
+  checkbox in the `Builder` header), which removes combat generals when off.
+- The "Offered now" switch (`onlyOfferedNow`), shown in the header only for
+  rotating `_ac_` corps. When on, it keeps only the combat **and** staff generals
+  the game offers in this corps's current local-time rotation window; non-general
+  cards are never hidden by it. `Builder` computes the offered-key set with
+  `offeredCombatKeys` + `offeredStaffKeys` (see the rotation predictor section)
+  using `new Date()` at render, then `hiddenByRotation()` filters the grid and the
+  match count. Unlike `showCombatGenerals`, `onlyOfferedNow` is transient (not
+  stored in `BuildConfig`/saves), since the offered set changes every window.
 
 Search matches unit name and unit key.
 
@@ -497,6 +512,13 @@ Saves store:
 
 Older save shapes are migrated by `migrateSavedBuild()`. Loading resolves unit
 keys against the current roster and reports missing keys rather than crashing.
+
+Saved-build names are unique **per corps**, not globally. The Load menu already
+lists only the open corps's builds, and `BuildRepository.findByName(name,
+factionKey?)` scopes its lookup to a corps when given a `factionKey`. `SaveLoadBar`'s
+Save As passes the current `factionKey`, so the duplicate-name overwrite prompt
+fires only for a same-named build in the *same* corps; two different corps can each
+keep a build of the same name, each loading its own.
 
 Components must use `BuildRepository`; do not directly touch localStorage.
 `state/storage.ts` abstracts persistence and can be swapped later for a desktop
@@ -545,14 +567,19 @@ Release output:
 - `web/release/*.blockmap`
 - `web/release/_github_assets/` curated upload folder.
 
-For the current release (v1.3.2), `_github_assets` contains:
+For the current stable release (v1.3.4), `_github_assets` contains:
 
-- `RegistreDesArmees-Setup-1.3.2.exe`
-- `RegistreDesArmees-Setup-1.3.2.exe.blockmap`
-- `RegistreDesArmees-Portable-1.3.2.exe`
+- `RegistreDesArmees-Setup-1.3.4.exe`
+- `RegistreDesArmees-Setup-1.3.4.exe.blockmap`
+- `RegistreDesArmees-Portable-1.3.4.exe`
 - `latest.yml`
 
-v1.3.2 adds the combat & staff general rotation predictor (see its section above).
+v1.3.4 (plain `1.3.4` semver → stable channel, `allowPrerelease=false`) adds: the
+"General times" popup de-emojied; an "Offered now" header toggle that shows only
+the combat & staff generals in the corps's current rotation window; the header
+"Squares" stat shown as `squares/infantry`; and per-corps saved-build name
+uniqueness. It supersedes the v1.3.3-beta.1 pre-release. v1.3.2 introduced the
+combat & staff general rotation predictor (see its section above).
 
 Auto-update requires the installer, the channel `.yml`, and blockmap attached to
 the GitHub Release tagged `v<version>`. The portable exe is for manual download.
