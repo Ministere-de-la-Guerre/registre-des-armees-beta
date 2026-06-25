@@ -45,6 +45,9 @@ export interface FilterState {
   brigades: number[]; // empty = all
   abilities: Record<keyof UnitAbilities, Tri>;
   showCombatGenerals: boolean;
+  /** When on, combat & staff generals not in the current local-time rotation
+   *  window are removed from the grid (see Builder's rotation-offered set). */
+  onlyOfferedNow: boolean;
 }
 
 export type BroadCategory = "infantry" | "cavalry" | "artillery" | "generals" | "other";
@@ -171,6 +174,7 @@ export function defaultFilters(): FilterState {
     brigades: [],
     abilities,
     showCombatGenerals: true,
+    onlyOfferedNow: false,
   };
 }
 

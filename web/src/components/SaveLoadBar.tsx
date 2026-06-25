@@ -92,9 +92,11 @@ export function SaveLoadBar({
   };
 
   const saveAsName = (name: string) => {
-    const existing = repo.findByName(name);
+    // Scope the duplicate-name check to this corps so the same name can exist
+    // independently under another corps (each loads its own build).
+    const existing = repo.findByName(name, current.factionKey);
     if (existing) {
-      if (!window.confirm(`A build named “${name}” already exists. Overwrite it?`)) return;
+      if (!window.confirm(`A build named “${name}” already exists for this corps. Overwrite it?`)) return;
       const saved = buildToSaved(current, { id: existing.id, name: existing.name, createdAt: existing.createdAt });
       if (persistAndReport(repo.save(saved), `Overwrote “${saved.name}”.`)) onSaved(saved);
       return;

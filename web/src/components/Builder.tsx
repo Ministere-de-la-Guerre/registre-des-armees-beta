@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { assetUrl } from "../data/assets";
 import type { FactionRoster, UnitCard } from "../domain/types";
 import {
@@ -32,6 +32,7 @@ import { BuilderGrid, type DivisionGroup, type GroupMeta, type MedallionHandlers
 import { DetailsPanel } from "./DetailsPanel";
 import { FilterPanel } from "./FilterPanel";
 import { Medallion } from "./Medallion";
+import { combatPool, offeredCombatKeys, offeredStaffKeys, rotationApplies, staffPool } from "../state/rotation";
 import { RotationModal } from "./RotationModal";
 import { SaveLoadBar } from "./SaveLoadBar";
 import { Tooltip } from "./Tooltip";
@@ -177,9 +178,29 @@ export function Builder({
     onHoverEnd: () => setHovered(null),
   };
 
+  // Set of general unitKeys offered in this corps's current local-time rotation
+  // window. Computed only when the "Offered now" view toggle is on and the corps
+  // uses the rotating pool; null otherwise (so no general is hidden by rotation).
+  const supportsRotation = rotationApplies(roster.factionKey);
+  const offeredNowKeys = useMemo(() => {
+    if (!filters.onlyOfferedNow || !supportsRotation) return null;
+    const now = new Date();
+    return new Set<string>([
+      ...offeredCombatKeys(roster.factionKey, combatPool(roster.cards), now),
+      ...offeredStaffKeys(staffPool(roster.cards), roster.armyCorpsName, now),
+    ]);
+  }, [filters.onlyOfferedNow, supportsRotation, roster.cards, roster.factionKey, roster.armyCorpsName]);
+
+  // A general is hidden when the "Offered now" toggle is on and it is not in the
+  // current rotation window. Non-general units are never hidden by this toggle.
+  const hiddenByRotation = useCallback(
+    (c: UnitCard) => offeredNowKeys != null && c.isGeneral && !offeredNowKeys.has(c.unitKey),
+    [offeredNowKeys],
+  );
+
   // --- organizational grouping ---
   const { staffGenerals, divisions, unplaced } = useMemo(() => {
-    const visible = roster.cards.filter((c) => !isHiddenByGeneralSwitch(c, filters));
+    const visible = roster.cards.filter((c) => !isHiddenByGeneralSwitch(c, filters) && !hiddenByRotation(c));
     const staffGenerals: UnitCard[] = [];
     const divMap = new Map<number, Map<number, UnitCard[]>>();
     const unplaced: UnitCard[] = [];
@@ -205,7 +226,7 @@ export function Builder({
           .map((brigade) => ({ brigade, cards: divMap.get(division)!.get(brigade)! })),
       }));
     return { staffGenerals, divisions, unplaced: orderBrigadeCards(unplaced) };
-  }, [roster.cards, filters]);
+  }, [roster.cards, filters, hiddenByRotation]);
 
   const { divisionMeta, brigadeMeta } = useMemo(() => {
     const totals = buildRosterTotals(roster.cards, roster.factionKey);
@@ -251,8 +272,11 @@ export function Builder({
   }, [roster.cards, roster.factionKey, summary]);
 
   const matchCount = useMemo(
-    () => roster.cards.filter((c) => matchesCard(c, filters) && !isHiddenByGeneralSwitch(c, filters)).length,
-    [roster.cards, filters],
+    () =>
+      roster.cards.filter(
+        (c) => matchesCard(c, filters) && !isHiddenByGeneralSwitch(c, filters) && !hiddenByRotation(c),
+      ).length,
+    [roster.cards, filters, hiddenByRotation],
   );
 
   const current = { build, config, factionKey: roster.factionKey, armyCorpsName: roster.armyCorpsName };
@@ -301,9 +325,11 @@ export function Builder({
               <span style={{ fontSize: 11, opacity: 0.7 }}> · {Math.max(0, combatCap - combatGensUsed)} left</span>
             </div>
           </div>
-          <div className="hstat" title="Selected unit cards able to form square">
+          <div className="hstat" title="Selected unit cards able to form square, out of your total infantry (line, light, grenadiers, militia, irregulars; combat generals leading infantry count; skirmishers excluded)">
             <div className="lbl">Squares</div>
-            <div className="val">{summary.totalSquares}</div>
+            <div className="val">
+              {summary.totalSquares}/{summary.totalInfantry}
+            </div>
           </div>
           <div className="hstat">
             <div className="lbl">Cost / {MAX_BUILD_COST.toLocaleString()}</div>
@@ -325,12 +351,25 @@ export function Builder({
           />
           Combat generals
         </label>
+        {supportsRotation && (
+          <label
+            style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}
+            title="Show only the combat & staff generals the game offers in this corps right now (your local-time rotation window)"
+          >
+            <input
+              type="checkbox"
+              checked={filters.onlyOfferedNow}
+              onChange={(e) => setFilters((f) => ({ ...f, onlyOfferedNow: e.target.checked }))}
+            />
+            Offered now
+          </label>
+        )}
         <button
           className="btn small"
           onClick={() => setRotationOpen(true)}
           title="When can I recruit each selected combat general? (in-game rotation times)"
         >
-          ⏱ General times
+          General times
         </button>
         <button className="btn small" onClick={() => setFiltersOpen((o) => !o)}>
           {filtersOpen ? "Hide filters" : "Filters"}

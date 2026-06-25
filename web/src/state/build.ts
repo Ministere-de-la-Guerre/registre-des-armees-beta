@@ -393,7 +393,21 @@ export interface BuildSummary {
   totalMen: number;
   /** Number of selected cards that can form square. */
   totalSquares: number;
+  /** Selected infantry — every infantry class except skirmishers (so line, light,
+   *  grenadiers, militia and irregulars all count), including combat generals whose
+   *  led unit is such infantry. Cavalry, artillery and staff generals are excluded.
+   *  This is the denominator of the Squares stat. */
+  totalInfantry: number;
   violationMessages: string[];
+}
+
+/** True when a selected card counts as infantry for the Squares denominator:
+ *  any infantry class other than skirmishers. A combat general is classed by the
+ *  unit it leads (underlyingUnitClass); a staff general uses unitClass "general"
+ *  and so is excluded. */
+function isCountedInfantry(c: UnitCard): boolean {
+  const cls = c.isGeneral && c.generalKind === "combat" ? c.underlyingUnitClass || c.unitClass : c.unitClass;
+  return cls.startsWith("infantry") && cls !== "infantry_skirmishers";
 }
 
 const RULE_LABELS: Record<string, string> = {
@@ -435,6 +449,7 @@ export function summarize(index: RosterIndex, build: BuildState): BuildSummary {
   }
   const totalMen = expanded.cards.reduce((sum, c) => sum + (c.finalMen ?? 0), 0);
   const totalSquares = expanded.cards.reduce((sum, c) => sum + (c.abilities.canFormSquare ? 1 : 0), 0);
+  const totalInfantry = expanded.cards.reduce((sum, c) => sum + (isCountedInfantry(c) ? 1 : 0), 0);
   const violationMessages = limits.violations.map((v) =>
     describeViolation(v.rule, v.actual, v.maximum, index),
   );
@@ -445,6 +460,7 @@ export function summarize(index: RosterIndex, build: BuildState): BuildSummary {
     totalCards: expanded.cards.length,
     totalMen,
     totalSquares,
+    totalInfantry,
     violationMessages,
   };
 }
