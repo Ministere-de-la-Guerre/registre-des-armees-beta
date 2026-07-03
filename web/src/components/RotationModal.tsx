@@ -1,10 +1,11 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FactionRoster } from "../domain/types";
 import type { BuildState, RosterIndex } from "../state/build";
 import {
   combatPool,
   combatSelectCount,
   findRotation,
+  findRotationCover,
   findStaffRotation,
   offeredCombatKeys,
   offeredStaffKeys,
@@ -12,11 +13,20 @@ import {
   staffPool,
   windowStart,
 } from "../state/rotation";
+import { defaultStorageAdapter } from "../state/storage";
 import { fmtDateTime, fmtRel, windowRange } from "./rollTimeFormat";
 import { DirectionBadge } from "./DirectionBadge";
 
-/** Popup listing, for every combat general currently in the build, the nearest
- *  local time (past or future) the game offers them in this corps's rotation. */
+type RotationView = "combined" | "individual";
+const VIEW_KEY = "rda.rotationView";
+function readRotationView(): RotationView {
+  return defaultStorageAdapter().read(VIEW_KEY) === "individual" ? "individual" : "combined";
+}
+
+/** Popup that groups the selected combat & staff generals into the fewest in-game
+ *  windows ("time rolls") that together offer them all — since a single window
+ *  lets you recruit every general it happens to roll. Ties are broken toward the
+ *  tightest cluster of windows, then the cluster nearest the current local time. */
 export function RotationModal({
   roster,
   index,
@@ -44,6 +54,14 @@ export function RotationModal({
     [applies, roster.factionKey],
   );
 
+  // Combined (fewest windows) vs individual (one row per general). Persisted so the
+  // choice sticks across corps and reloads; combined is the default.
+  const [view, setView] = useState<RotationView>(readRotationView);
+  const chooseView = (v: RotationView) => {
+    setView(v);
+    defaultStorageAdapter().write(VIEW_KEY, v);
+  };
+
   // Generals to time: each distinct combat general in the build, plus the
   // staff-slot commander — both are offered on the same windowed roll (the staff
   // pool is shuffled independently and offers exactly one per window).
@@ -66,19 +84,37 @@ export function RotationModal({
     return out;
   }, [build.instances, build.staffSlotUnitKey, index]);
 
-  const rows = useMemo(
-    () =>
-      applies
-        ? selected.map((g) => ({
-            ...g,
-            result:
-              g.kind === "combat"
-                ? findRotation(combat, combatCount, g.unitKey, now)
-                : findStaffRotation(staff, roster.armyCorpsName, g.unitKey, now),
-          }))
-        : [],
-    [applies, selected, combat, staff, combatCount, now, roster.armyCorpsName],
-  );
+  // Combat and staff are rolled together in the same window, so cover them jointly:
+  // a window offers whichever combat generals it rolls plus the staff commander (+
+  // any rotating staff pick). One pass finds the fewest windows covering the lot.
+  const meta = useMemo(() => new Map(selected.map((g) => [g.unitKey, g])), [selected]);
+  const cover = useMemo(() => {
+    if (!applies || selected.length === 0) return { groups: [], unreachable: [] };
+    const offeredAt = (d: Date): string[] => [
+      ...offeredCombatKeys(roster.factionKey, combat, d),
+      ...offeredStaffKeys(staff, roster.armyCorpsName, d),
+    ];
+    return findRotationCover(offeredAt, selected.map((g) => g.unitKey), now);
+  }, [applies, selected, combat, staff, now, roster.factionKey, roster.armyCorpsName]);
+
+  // Individual view: one row per general with its own nearest/next/previous times,
+  // ordered by that nearest time so generals offered in the same window sit together.
+  const rows = useMemo(() => {
+    if (!applies) return [];
+    const withResult = selected.map((g) => ({
+      ...g,
+      result:
+        g.kind === "combat"
+          ? findRotation(combat, combatCount, g.unitKey, now)
+          : findStaffRotation(staff, roster.armyCorpsName, g.unitKey, now),
+    }));
+    // Sort by nearest window time (generals never offered sink to the bottom).
+    const rank = (t: Date | null) => (t ? t.getTime() : Number.POSITIVE_INFINITY);
+    return withResult
+      .map((r, i) => ({ r, i }))
+      .sort((a, b) => rank(a.r.result.closest) - rank(b.r.result.closest) || a.i - b.i)
+      .map(({ r }) => r);
+  }, [applies, selected, combat, staff, combatCount, now, roster.armyCorpsName]);
 
   // Verification readout: what the game offers in this corps right now.
   const offeredNow = useMemo(() => {
@@ -103,10 +139,34 @@ export function RotationModal({
           <div>
             <h3 style={{ color: "var(--gold-bright)" }}>General rotation</h3>
             <div style={{ fontSize: 12, opacity: 0.85 }}>
-              Nearest local time you can recruit each selected combat &amp; staff general
+              {view === "combined"
+                ? "The fewest local-time windows that together offer every selected combat & staff general"
+                : "Nearest local time you can recruit each selected combat & staff general"}
             </div>
           </div>
           <div style={{ flex: 1 }} />
+          {applies && selected.length > 0 && (
+            <div className="rot-seg" role="tablist" aria-label="Rotation view">
+              <button
+                role="tab"
+                aria-selected={view === "combined"}
+                className={view === "combined" ? "on" : ""}
+                onClick={() => chooseView("combined")}
+                title="Group the selection into the fewest in-game windows that cover it"
+              >
+                Fewest windows
+              </button>
+              <button
+                role="tab"
+                aria-selected={view === "individual"}
+                className={view === "individual" ? "on" : ""}
+                onClick={() => chooseView("individual")}
+                title="One row per general, ordered so ones offered at the same time sit together"
+              >
+                Per general
+              </button>
+            </div>
+          )}
           <button className="btn small" onClick={onClose} aria-label="Close rotation">
             ✕
           </button>
@@ -123,41 +183,94 @@ export function RotationModal({
               combat general”) and/or set a corps commander, then reopen this to see when each one is
               offered in game.
             </div>
+          ) : view === "combined" ? (
+            <>
+              {cover.groups.length > 1 && (
+                <div className="rot-note" style={{ marginBottom: 10 }}>
+                  Your selection can't be recruited in a single window — here are the {cover.groups.length}{" "}
+                  windows that cover it in the fewest visits.
+                </div>
+              )}
+              <ul className="rot-list">
+                {cover.groups.map((g, i) => (
+                  <li key={g.window.getTime()} className="rot-row">
+                    <div className="rot-name">
+                      {cover.groups.length > 1 && <span className="rot-kind">Roll {i + 1}</span>}
+                      {g.direction === "now" ? (
+                        <>Offered now · this window {windowRange(g.window)}</>
+                      ) : (
+                        <>
+                          {fmtDateTime(g.window)} · {windowRange(g.window)}
+                        </>
+                      )}
+                      <DirectionBadge dir={g.direction} />
+                      {g.direction !== "now" && (
+                        <span className="rot-rel">({fmtRel(g.window, now)})</span>
+                      )}
+                    </div>
+                    <ul className="rot-gens">
+                      {g.keys.map((key) => {
+                        const m = meta.get(key);
+                        return (
+                          <li key={key} className="rot-gen">
+                            <span className={`rot-kind ${m?.kind ?? "combat"}`}>{m?.kind ?? "combat"}</span>
+                            {m?.name ?? key}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+              {cover.unreachable.length > 0 && (
+                <div className="rot-when rot-never" style={{ marginTop: 10 }}>
+                  Not offered in this corps's rotation:{" "}
+                  {cover.unreachable.map((k) => meta.get(k)?.name ?? k).join(" · ")}
+                </div>
+              )}
+            </>
           ) : (
             <ul className="rot-list">
-              {rows.map((r) => (
-                <li key={r.unitKey} className="rot-row">
-                  <div className="rot-name">
-                    <span className={`rot-kind ${r.kind}`}>{r.kind}</span>
-                    {r.name}
-                    <DirectionBadge dir={r.result.closestDirection} />
-                  </div>
-                  {r.result.closest ? (
-                    <div className="rot-when">
-                      <div className="rot-closest">
-                        {r.result.closestDirection === "now" ? (
-                          <>Offered now · this window {windowRange(r.result.closest)}</>
-                        ) : (
-                          <>
-                            {fmtDateTime(r.result.closest)} · {windowRange(r.result.closest)}
-                            <span className="rot-rel"> ({fmtRel(r.result.closest, now)})</span>
-                          </>
-                        )}
-                      </div>
-                      <div className="rot-alt">
-                        {r.result.next && r.result.closestDirection !== "now" && (
-                          <span>Next: {fmtDateTime(r.result.next)} ({fmtRel(r.result.next, now)})</span>
-                        )}
-                        {r.result.prev && (
-                          <span>Previous: {fmtDateTime(r.result.prev)} ({fmtRel(r.result.prev, now)})</span>
-                        )}
-                      </div>
+              {rows.map((r, i) => {
+                // Flag the first row of each shared-time run so same-time generals
+                // read as one visually connected group.
+                const prev = i > 0 ? rows[i - 1].result.closest : null;
+                const groupedWithPrev =
+                  prev != null && r.result.closest != null && prev.getTime() === r.result.closest.getTime();
+                return (
+                  <li key={r.unitKey} className={`rot-row${groupedWithPrev ? " rot-row-cont" : ""}`}>
+                    <div className="rot-name">
+                      <span className={`rot-kind ${r.kind}`}>{r.kind}</span>
+                      {r.name}
+                      <DirectionBadge dir={r.result.closestDirection} />
                     </div>
-                  ) : (
-                    <div className="rot-when rot-never">Not found in the rotation for this corps.</div>
-                  )}
-                </li>
-              ))}
+                    {r.result.closest ? (
+                      <div className="rot-when">
+                        <div className="rot-closest">
+                          {r.result.closestDirection === "now" ? (
+                            <>Offered now · this window {windowRange(r.result.closest)}</>
+                          ) : (
+                            <>
+                              {fmtDateTime(r.result.closest)} · {windowRange(r.result.closest)}
+                              <span className="rot-rel"> ({fmtRel(r.result.closest, now)})</span>
+                            </>
+                          )}
+                        </div>
+                        <div className="rot-alt">
+                          {r.result.next && r.result.closestDirection !== "now" && (
+                            <span>Next: {fmtDateTime(r.result.next)} ({fmtRel(r.result.next, now)})</span>
+                          )}
+                          {r.result.prev && (
+                            <span>Previous: {fmtDateTime(r.result.prev)} ({fmtRel(r.result.prev, now)})</span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rot-when rot-never">Not found in the rotation for this corps.</div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
 
