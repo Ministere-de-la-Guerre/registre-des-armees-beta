@@ -33,6 +33,20 @@ export function isPhone(): boolean {
   return phoneMql?.matches ?? false;
 }
 
+/** True on iPads that masquerade as desktop. iPadOS Safari — and its default
+ *  "Request Desktop Website" — reports `hover: hover` / `pointer: fine`, so the
+ *  coarse-pointer signal above misses the iPad entirely. Detect it structurally
+ *  instead: a Mac platform that also reports multiple touch points is an iPad —
+ *  never a real Mac (0 touch points) and never the Windows Electron desktop build.
+ *  Android/other touch tablets already satisfy `isCoarsePointer()`, so this exists
+ *  purely to close the iPad gap for the touch header-scroller. */
+export function isTabletTouch(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const maxTouch = navigator.maxTouchPoints ?? 0;
+  const platform = navigator.platform ?? "";
+  return maxTouch > 1 && /^(Mac|iPad|iPhone)/.test(platform);
+}
+
 /** Reactive variant for components that must re-render if the signal ever flips. */
 export function useCoarsePointer(): boolean {
   const [coarse, setCoarse] = useState(isCoarsePointer);
