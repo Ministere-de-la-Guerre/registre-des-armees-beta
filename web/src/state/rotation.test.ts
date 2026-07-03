@@ -4,6 +4,7 @@ import {
   WINDOW_START_HOURS,
   combatPool,
   findRotation,
+  findRotationCover,
   offeredCombatKeys,
   offeredStaffKeys,
   seedForDate,
@@ -131,6 +132,73 @@ describe("findRotation", () => {
       const expected = toNext <= fromPrev ? r.next : r.prev;
       expect(r.closest!.getTime()).toBe(expected.getTime());
     }
+  });
+});
+
+describe("findRotationCover", () => {
+  const p = pool(20);
+  const offeredAt = (d: Date) => offeredCombatKeys(FACTION, p, d);
+
+  it("returns nothing for no targets", () => {
+    const r = findRotationCover(offeredAt, [], new Date(2026, 5, 23, 10));
+    expect(r.groups).toEqual([]);
+    expect(r.unreachable).toEqual([]);
+  });
+
+  it("covers generals offered together in a single window", () => {
+    const now = new Date(2026, 5, 23, 14, 20);
+    const here = offeredCombatKeys(FACTION, p, now); // 6 generals offered right now
+    const r = findRotationCover(offeredAt, here, now);
+    expect(r.groups.length).toBe(1); // one window covers them all
+    expect(r.groups[0].direction).toBe("now");
+    expect(new Set(r.groups[0].keys)).toEqual(new Set(here));
+    expect(r.unreachable).toEqual([]);
+  });
+
+  it("splits into the fewest windows when they can't share one, listing each general once", () => {
+    const now = new Date(2026, 5, 23, 10, 0);
+    // 7 targets can never fit one window (cap 6), so at least two windows are needed.
+    const targets = p.slice(0, 7).map((c) => c.unitKey);
+    const r = findRotationCover(offeredAt, targets, now);
+    expect(r.unreachable).toEqual([]);
+    expect(r.groups.length).toBeGreaterThanOrEqual(2);
+    // No single window offers all seven, confirming ≥2 is genuinely required.
+    const covered = r.groups.flatMap((g) => g.keys);
+    expect(new Set(covered)).toEqual(new Set(targets)); // union covers all…
+    expect(covered.length).toBe(targets.length); // …and each general appears exactly once
+    // Every group's window really offers the generals attributed to it.
+    for (const g of r.groups) {
+      const here = new Set(offeredCombatKeys(FACTION, p, g.window));
+      for (const key of g.keys) expect(here.has(key)).toBe(true);
+    }
+  });
+
+  it("reports generals that never appear as unreachable", () => {
+    const now = new Date(2026, 5, 23, 10, 0);
+    const r = findRotationCover(offeredAt, ["not-a-real-key"], now);
+    expect(r.groups).toEqual([]);
+    expect(r.unreachable).toEqual(["not-a-real-key"]);
+  });
+
+  it("breaks count ties toward the tightest cluster, then nearest to now", () => {
+    // now is 10:00, inside the 09:00 window. A and B never co-occur; each is offered
+    // twice a day. The two-window covers of {A,B} with the tightest 3h spread are the
+    // 03:00+06:00 (past) and 17:00+20:00 (future) pairs; the morning pair sits nearer
+    // to 10:00, so it must win. Schedule is year-independent (the rotation is), so the
+    // finder's per-seed memo stays valid.
+    const now = new Date(2026, 5, 23, 10, 0);
+    const sched = (d: Date): string[] => {
+      if (d.getMonth() !== 5 || d.getDate() !== 23) return [];
+      const h = d.getHours();
+      if (h === 3 || h === 17) return ["B"];
+      if (h === 6 || h === 20) return ["A"];
+      return [];
+    };
+    const r = findRotationCover(sched, ["A", "B"], now);
+    expect(r.groups.length).toBe(2);
+    expect(r.groups.map((g) => g.window.getHours())).toEqual([3, 6]);
+    expect(r.groups.map((g) => g.keys)).toEqual([["B"], ["A"]]);
+    expect(r.groups.every((g) => g.direction === "past")).toBe(true);
   });
 });
 

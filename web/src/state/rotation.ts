@@ -330,3 +330,241 @@ export function findStaffRotation(
 ): RotationResult {
   return findRotationWith(targetKey, now, (d) => offeredStaffKeys(pool, corpsName, d));
 }
+
+// --- Minimal-cover grouping ---------------------------------------------------
+// Rather than time each selected general on its own row, the game lets you grab
+// every general a window happens to offer in one visit. So the useful answer is
+// the *fewest* windows ("time rolls") that together offer all selected generals —
+// a set-cover over the rotation, exactly like the ToW roll finder combines corps.
+// Ties (same number of windows) are broken by clustering the windows as close
+// together as possible, then as close to now as possible.
+
+export interface RotationGroup {
+  /** Window start (local) at which this group of generals is jointly offered. */
+  window: Date;
+  /** Whether this window is the current one, upcoming, or most-recently past. */
+  direction: "now" | "future" | "past";
+  /** The selected general keys to recruit in this window (each assigned once). */
+  keys: string[];
+}
+
+export interface RotationCoverResult {
+  /** Minimal set of windows covering every reachable target, ordered by time. */
+  groups: RotationGroup[];
+  /** Selected keys never offered in any window (not in this corps's rotation). */
+  unreachable: string[];
+}
+
+/** One candidate k-window pick, scored for the tie-break comparison. */
+interface CoverPick {
+  times: Date[];
+  spread: number; // hi − lo of the chosen window times (ms)
+  nearest: number; // min |t − now| across the pick (ms)
+  farthest: number; // max |t − now| across the pick (ms)
+  future: boolean; // whether the nearest window is now/upcoming (vs past)
+  lo: number; // earliest window time (ms), final deterministic tiebreak
+}
+
+/** Order two candidate picks: fewest-windows is fixed (both size k), so compare by
+ *  tightest cluster (spread), then closest to now, then a deterministic tail. */
+function pickIsBetter(a: CoverPick, b: CoverPick): boolean {
+  if (a.spread !== b.spread) return a.spread < b.spread;
+  if (a.nearest !== b.nearest) return a.nearest < b.nearest;
+  if (a.farthest !== b.farthest) return a.farthest < b.farthest;
+  if (a.future !== b.future) return a.future; // prefer future/now over past on ties
+  return a.lo < b.lo;
+}
+
+/** Smallest-range pick over k sorted time-lists: choose one time from each list to
+ *  minimise the cluster spread, tie-broken by closeness to now. Classic k-way
+ *  min-range sweep — advance the list holding the current minimum, tracking the
+ *  best configuration seen. Every list is non-empty (guaranteed by the caller). */
+function bestPickForLists(lists: readonly (readonly Date[])[], now: number): CoverPick {
+  const ptr = lists.map(() => 0);
+  let curMax = -Infinity;
+  for (const l of lists) curMax = Math.max(curMax, l[0].getTime());
+
+  let best: CoverPick | null = null;
+  for (;;) {
+    // The list whose current front is the minimum defines the cluster's low edge.
+    let minI = 0;
+    for (let i = 1; i < lists.length; i++) {
+      if (lists[i][ptr[i]].getTime() < lists[minI][ptr[minI]].getTime()) minI = i;
+    }
+    const times = lists.map((l, i) => l[ptr[i]]);
+    const ms = times.map((t) => t.getTime());
+    const lo = ms[minI];
+    const dists = ms.map((t) => Math.abs(t - now));
+    const nearestI = ms.reduce((bi, t, i) => (Math.abs(t - now) < Math.abs(ms[bi] - now) ? i : bi), 0);
+    const cand: CoverPick = {
+      times,
+      spread: curMax - lo,
+      nearest: Math.min(...dists),
+      farthest: Math.max(...dists),
+      future: ms[nearestI] >= now,
+      lo,
+    };
+    if (!best || pickIsBetter(cand, best)) best = cand;
+
+    ptr[minI]++;
+    if (ptr[minI] === lists[minI].length) break; // a list is exhausted → done
+    curMax = Math.max(curMax, lists[minI][ptr[minI]].getTime());
+  }
+  return best!;
+}
+
+/** The fewest windows (past or future) that together offer every selected general,
+ *  clustered as tightly as possible and then as near to `now` as possible.
+ *
+ *  `offered(d)` returns the general keys a window offers (combat ∪ staff — both are
+ *  rolled in the same window). Each returned group lists the targets to recruit in
+ *  that window, assigned to exactly one window so every general is shown once. */
+export function findRotationCover(
+  offered: (d: Date) => Iterable<string>,
+  targets: readonly string[],
+  now: Date,
+): RotationCoverResult {
+  const targetList = [...new Set(targets)];
+  if (targetList.length === 0) return { groups: [], unreachable: [] };
+  // Bit per target (build combat cap ≤ 8 + one staff slot ⇒ well within 31 bits).
+  const bitOf = new Map<string, number>();
+  targetList.forEach((k, i) => bitOf.set(k, 1 << i));
+
+  const maskMemo = new Map<number, number>();
+  const maskAt = (d: Date): number => {
+    const seed = seedForDate(d);
+    let m = maskMemo.get(seed);
+    if (m === undefined) {
+      m = 0;
+      for (const key of offered(d)) {
+        const b = bitOf.get(key);
+        if (b !== undefined) m |= b;
+      }
+      maskMemo.set(seed, m);
+    }
+    return m;
+  };
+
+  // Enumerate windows both directions from now, keeping those that offer any target.
+  const cands: { time: Date; mask: number }[] = [];
+  const cur = windowStart(now);
+  {
+    let ws = cur;
+    for (let i = 0; i < MAX_WINDOWS; i++) {
+      const m = maskAt(ws);
+      if (m) cands.push({ time: ws, mask: m });
+      ws = nextWindowStart(ws);
+    }
+  }
+  {
+    let ws = prevWindowStart(cur);
+    for (let i = 0; i < MAX_WINDOWS; i++) {
+      const m = maskAt(ws);
+      if (m) cands.push({ time: ws, mask: m });
+      ws = prevWindowStart(ws);
+    }
+  }
+
+  let reachable = 0;
+  for (const c of cands) reachable |= c.mask;
+  const unreachable = targetList.filter((k) => !(reachable & bitOf.get(k)!));
+  const fullMask = reachable;
+  if (fullMask === 0) return { groups: [], unreachable: targetList };
+
+  // Sorted time-lists per distinct coverage mask (a window has exactly one mask).
+  const timesByMask = new Map<number, Date[]>();
+  for (const c of cands) {
+    const list = timesByMask.get(c.mask);
+    if (list) list.push(c.time);
+    else timesByMask.set(c.mask, [c.time]);
+  }
+  for (const list of timesByMask.values()) list.sort((a, b) => a.getTime() - b.getTime());
+  const distinct = [...timesByMask.keys()];
+
+  // Fewest windows to cover fullMask — BFS over reached-bit states (unit step cost).
+  const dist = new Map<number, number>([[0, 0]]);
+  let frontier = [0];
+  while (frontier.length && !dist.has(fullMask)) {
+    const next: number[] = [];
+    for (const s of frontier) {
+      for (const m of distinct) {
+        const ns = s | m;
+        if (!dist.has(ns)) {
+          dist.set(ns, dist.get(s)! + 1);
+          next.push(ns);
+        }
+      }
+    }
+    frontier = next;
+  }
+  const k = dist.get(fullMask)!;
+
+  // Enumerate every size-k combination of distinct masks that covers fullMask, and
+  // keep the one whose best time-assignment clusters tightest / nearest to now.
+  // A combination need only use masks that each add coverage (a minimal cover has
+  // no redundant window), and is pruned when the remaining masks can't complete it.
+  const suffixOr = new Array<number>(distinct.length + 1).fill(0);
+  for (let i = distinct.length - 1; i >= 0; i--) suffixOr[i] = suffixOr[i + 1] | distinct[i];
+  const nowMs = now.getTime();
+
+  let best: CoverPick | null = null;
+  let bestMasks: number[] | null = null;
+  const chosen: number[] = [];
+  const dfs = (start: number, acc: number): void => {
+    if (chosen.length === k) {
+      if (acc !== fullMask) return;
+      const pick = bestPickForLists(
+        chosen.map((m) => timesByMask.get(m)!),
+        nowMs,
+      );
+      if (!best || pickIsBetter(pick, best)) {
+        best = pick;
+        bestMasks = [...chosen];
+      }
+      return;
+    }
+    for (let i = start; i < distinct.length; i++) {
+      if ((acc | suffixOr[i]) !== fullMask) break; // can't finish from here on
+      const m = distinct[i];
+      if ((acc | m) === acc) continue; // redundant — adds no new coverage
+      chosen.push(m);
+      dfs(i + 1, acc | m);
+      chosen.pop();
+    }
+  };
+  dfs(0, 0);
+
+  const pick = best!;
+  const masks = bestMasks!;
+
+  // Assign each target to exactly one chosen window (the one nearest to now that
+  // offers it) so every general is listed once — a clean per-window shopping list.
+  const groups = masks.map((mask, i) => ({ window: pick.times[i], mask, keys: [] as string[] }));
+  const curMs = cur.getTime();
+  for (const key of targetList) {
+    const b = bitOf.get(key)!;
+    if (!(reachable & b)) continue;
+    let pickIdx = -1;
+    for (let i = 0; i < groups.length; i++) {
+      if (!(groups[i].mask & b)) continue;
+      if (
+        pickIdx < 0 ||
+        Math.abs(groups[i].window.getTime() - nowMs) < Math.abs(groups[pickIdx].window.getTime() - nowMs)
+      ) {
+        pickIdx = i;
+      }
+    }
+    if (pickIdx >= 0) groups[pickIdx].keys.push(key);
+  }
+
+  const result: RotationGroup[] = groups
+    .filter((g) => g.keys.length > 0)
+    .map((g): RotationGroup => ({
+      window: g.window,
+      direction: g.window.getTime() === curMs ? "now" : g.window.getTime() > nowMs ? "future" : "past",
+      keys: g.keys,
+    }))
+    .sort((a, b) => a.window.getTime() - b.window.getTime());
+
+  return { groups: result, unreachable };
+}
