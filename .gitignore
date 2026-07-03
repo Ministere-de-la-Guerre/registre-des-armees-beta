@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local assistant/workspace scratch
+.claude/
+.agents/
+
+# Curated release-upload staging (large installers, built locally, uploaded by hand)
+/_github_assets/
+/_github_assets_beta/
+

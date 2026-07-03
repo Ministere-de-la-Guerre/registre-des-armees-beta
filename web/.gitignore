@@ -1,0 +1,18 @@
+node_modules
+dist
+coverage
+*.local
+.vite
+
+# Electron desktop build output
+release
+*.tsbuildinfo
+
+# Build logs / smoke-test scratch + the compiled 7za wrapper
+*.log
+*smoke*.txt
+7za-wrapper.exe
+
+# Generated browser data (rebuild with `npm run build:data`)
+public/data
+public/assets

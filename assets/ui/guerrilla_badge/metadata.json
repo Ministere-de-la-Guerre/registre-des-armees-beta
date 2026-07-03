@@ -1,0 +1,23 @@
+{
+  "asset": "guerrilla_badge.png",
+  "native_size": {
+    "width": 16,
+    "height": 16
+  },
+  "layout": "lower_right",
+  "source_portrait_size": {
+    "width": 66,
+    "height": 88
+  },
+  "source_bounds": {
+    "left": 43,
+    "top": 57,
+    "right_exclusive": 59,
+    "bottom_exclusive": 73
+  },
+  "trigger_column": "has_guerrilla_deployment",
+  "trigger_value": "true",
+  "extraction_method": "Retained pixels identical across 80 distinct marked NTW3 portraits.",
+  "representative_source": "assets/icons/cavalry/russia_narod_cav_lance_189_999_0545_icon.tga",
+  "notes": "The original game stores the badge baked into marked portraits. This standalone transparent copy is intended for app rendering on ordinary units, artillery, combat generals, and staff generals."
+}
