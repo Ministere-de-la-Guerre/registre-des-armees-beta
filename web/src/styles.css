@@ -588,6 +588,35 @@ input::placeholder { color: #6f7888; }
   }
 }
 
+/* ----------------------------------------------------------------------------
+   iPad header scroller. iPadOS Safari masquerades as desktop (fine pointer), so
+   the coarse-pointer block below never fires on it and the faction controls bar
+   clips instead of scrolling. The `.tablet-touch` class (set in App.tsx only when
+   navigator identifies a real iPad — never a Mac, never Electron) re-applies just
+   the header swipe-scroller and its coupled Save/Load bottom sheet, mirroring the
+   coarse rules. The rest of the mobile chrome stays coarse-only by design. Keep
+   these two rule groups in sync with their counterparts in the coarse block.
+   ---------------------------------------------------------------------------- */
+.app.tablet-touch .corps-header {
+  flex-wrap: nowrap;
+  gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.app.tablet-touch .corps-header::-webkit-scrollbar { display: none; }
+.app.tablet-touch .corps-header > * { flex-shrink: 0; }
+.app.tablet-touch .corps-header .spacer { display: none; }
+.app.tablet-touch .corps-header .btn { min-height: 44px; }
+.app.tablet-touch .saves-menu {
+  position: fixed; left: 0; right: 0; top: auto; bottom: 0;
+  min-width: 0; width: 100%; max-height: 70dvh;
+  border-radius: 14px 14px 0 0;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+  z-index: 95;
+}
+
 /* ============================================================================
    MOBILE UX PASS (phones/tablets only). Everything below is gated to coarse
    pointers, so desktop browsers AND the Electron build (hover: hover / pointer:

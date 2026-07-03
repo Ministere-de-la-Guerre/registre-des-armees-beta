@@ -6,7 +6,7 @@ import { OfflinePanel } from "./components/OfflinePanel";
 import { UpdateToast } from "./components/UpdateToast";
 import { loadCorpsIndex, loadFaction } from "./data/load";
 import { applyUpdate, isWebTarget, registerPwa } from "./pwa";
-import { isCoarsePointer, useCoarsePointer } from "./components/useCoarsePointer";
+import { isCoarsePointer, isTabletTouch, useCoarsePointer } from "./components/useCoarsePointer";
 import type { CorpsEntry, CorpsIndex, FactionRoster } from "./domain/types";
 
 export default function App() {
@@ -29,6 +29,10 @@ export default function App() {
   // Never rendered on desktop / Electron (fine pointer). Defaults to collapsed in
   // short landscape (where the bars otherwise eat the screen), expanded in portrait.
   const coarse = useCoarsePointer();
+  // iPads report a fine pointer (see isTabletTouch), so `coarse` misses them. This
+  // flag is stable per session and only extends the touch header-scroller to iPad;
+  // the rest of the mobile chrome deliberately still keys off `coarse`.
+  const tabletTouch = useMemo(() => isTabletTouch(), []);
   const [chromeCollapsed, setChromeCollapsed] = useState(
     () => isCoarsePointer() && window.matchMedia("(orientation: landscape) and (max-height: 500px)").matches,
   );
@@ -80,7 +84,7 @@ export default function App() {
   const collapsed = coarse && builderActive && chromeCollapsed;
 
   return (
-    <div className={`app${collapsed ? " chrome-collapsed" : ""}`}>
+    <div className={`app${collapsed ? " chrome-collapsed" : ""}${tabletTouch ? " tablet-touch" : ""}`}>
       {coarse && builderActive && (
         <button
           type="button"
