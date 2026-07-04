@@ -210,6 +210,11 @@ input::placeholder { color: #6f7888; }
    ceilings; the "Corps N/4" header stat and the breakdown banner name the limit. */
 .medallion.overcorps .oval,
 .medallion.overcorps:hover .oval { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad), var(--shadow); }
+/* Touch two-tap "primed" state: a first tap has shown this unit's stat card and armed
+   it, so the next tap adds it. A gold ring marks which unit the next tap will act on.
+   Never set on desktop (no two-tap model). Red warning frames still win their border. */
+.medallion.primed .oval { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold), var(--shadow); }
+.medallion.primed.overbudget .oval, .medallion.primed.overcorps .oval { border-color: var(--bad); }
 
 /* Men count above the oval frame (own stacking context), never clipped. */
 .medallion .men {
