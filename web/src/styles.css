@@ -231,6 +231,12 @@ input::placeholder { color: #6f7888; }
   border: 1px solid var(--line-2); border-radius: 6px; padding: 0 5px; line-height: 15px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
+/* In the grid the speed pill sits at the top-left with the cap badge directly
+   beneath it, overlaying the oval (the tray anchors the speed pill above the oval
+   instead — see `.tray .medallion .speed`). The cap badge is semi-transparent so
+   it hides less of the portrait. */
+.medallion:not(.tray-mini) .speed { top: -6px; left: 0; }
+.medallion:not(.tray-mini) .qty { top: 15px; }
 .medallion .coststrip {
   position: absolute; left: 0; right: 0; bottom: 0;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.8)); display: flex; justify-content: center;
@@ -246,10 +252,11 @@ input::placeholder { color: #6f7888; }
 /* Cap usage badge (taken / cap) — a pill so multi-character text fits. */
 .medallion .qty.cap {
   width: auto; min-width: 19px; border-radius: 9px; padding: 0 5px; font-size: 10px;
-  background: rgba(20, 26, 34, 0.85); border-color: var(--line-2);
+  background: rgba(20, 26, 34, 0.58); border-color: var(--line-2);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
-.medallion.selected .qty.cap { background: var(--azure); border-color: #fff; }
-.medallion .qty.cap.full { background: var(--bad-deep); border-color: var(--bad); color: #fff; }
+.medallion.selected .qty.cap { background: rgba(90, 162, 230, 0.72); border-color: #fff; }
+.medallion .qty.cap.full { background: rgba(138, 53, 40, 0.72); border-color: var(--bad); color: #fff; }
 .medallion .stars {
   position: absolute; left: 50%; top: 1px; transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.72); border: 1px solid var(--gold); color: var(--gold-bright);

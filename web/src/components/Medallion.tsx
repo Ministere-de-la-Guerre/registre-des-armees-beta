@@ -46,8 +46,9 @@ export interface MedallionProps {
   overCorps?: boolean;
   atCap?: boolean;
   hideName?: boolean;
-  /** Show the speed/movement code (e.g. L4) as a badge in the top-left corner.
-   *  Used in the build tray where the cap badge is hidden. */
+  /** Force the speed/movement code (e.g. L4) badge in the build tray, where the
+   *  cap badge is hidden. The grid shows the speed pill too (under the cap badge),
+   *  driven by `!hideName` rather than this flag. */
   showSpeed?: boolean;
   onClick?: () => void;
   onContextMenu?: () => void;
@@ -164,12 +165,15 @@ export function Medallion({
       {/* Men count and the cap/qty badge sit above the frame (own stacking
           context) so the oval's overflow clip never hides them. */}
       {card.finalMen != null && <span className="men">{card.finalMen}</span>}
-      {showSpeed && card.speedCode && (
+      {/* Speed/movement pill, top-left. Shown in the build tray (showSpeed) and in
+          the grid, where it stacks directly under the cap badge (see the
+          `:not(.tray-mini) .speed` rule). Hidden in the modal head (hideName). */}
+      {card.speedCode && (showSpeed || !hideName) && (
         <span className="speed" title={`Speed ${card.speedCode}`}>{card.speedCode}</span>
       )}
       {/* The build tray (showSpeed) mirrors the desktop tray: speed badge only,
           no cap/qty/checkmark clutter. The cap badge stays in the grid, where
-          showSpeed is off. */}
+          showSpeed is off — it sits directly above the grid's speed pill. */}
       {card.groupCap > 0 && !hideName && !showSpeed ? (
         <span className={`qty cap${atCap ? " full" : ""}`} title={`${capShown} of ${card.groupCap} taken`}>
           {capShown}/{card.groupCap}
