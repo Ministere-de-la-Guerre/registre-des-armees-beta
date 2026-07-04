@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { FactionRoster } from "../domain/types";
+import { isTabletTouch, useCoarsePointer } from "./useCoarsePointer";
 import {
   BuildRepository,
   type CurrentBuild,
@@ -33,6 +35,15 @@ export function SaveLoadBar({
   const [open, setOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const coarse = useCoarsePointer();
+  // On touch/tablet the Load menu and the name prompt are fixed overlays that live
+  // inside the header's momentum-scroll container. iOS clips position:fixed
+  // descendants of a `-webkit-overflow-scrolling: touch` scroller, which hid them
+  // entirely — so portal them to <body> to escape that clip. Desktop keeps them
+  // inline (the dropdown is absolute-anchored to its button; byte-identical).
+  const overlaysPortal = coarse || isTabletTouch();
+  const renderOverlay = (node: ReactNode) => (overlaysPortal ? createPortal(node, document.body) : node);
 
   // Dismiss the Load menu on a tap/click outside it or Escape. On touch the menu
   // is a bottom sheet whose trigger button can be scrolled out of the header, so
@@ -40,7 +51,10 @@ export function SaveLoadBar({
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      // The menu may be portaled out of rootRef, so treat a tap inside either the
+      // trigger row or the menu itself as "inside".
+      const target = e.target as Node;
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
@@ -189,8 +203,9 @@ export function SaveLoadBar({
           e.target.value = "";
         }}
       />
-      {open && (
-        <div className="saves-menu">
+      {open &&
+        renderOverlay(
+        <div className="saves-menu" ref={menuRef}>
           {!repo.persistent && (
             <div className="saves-warning">Storage unavailable — saves will not persist this session.</div>
           )}
@@ -242,9 +257,10 @@ export function SaveLoadBar({
               </div>
             ))
           )}
-        </div>
-      )}
-      {namePrompt && (
+        </div>,
+        )}
+      {namePrompt &&
+        renderOverlay(
         <div className="modal-backdrop" onMouseDown={closeNamePrompt}>
           <div
             className="modal"
@@ -285,8 +301,8 @@ export function SaveLoadBar({
               </div>
             </div>
           </div>
-        </div>
-      )}
+        </div>,
+        )}
     </div>
   );
 }
