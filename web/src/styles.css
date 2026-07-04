@@ -718,13 +718,25 @@ input::placeholder { color: #6f7888; }
   /* --- Part 1a: collapsible bottom-sheet tray -----------------------------
      The always-present slim strip (running totals) replaces the desktop 31-slot row;
      tapping it raises a scrollable sheet of the actual selections at grid size. */
+  /* Pinned to the visual bottom rather than left as the last in-flow flex child.
+     In an iOS standalone PWA (apple-mobile-web-app-capable + black-translucent +
+     viewport-fit=cover) the home-screen webview over-reports 100vh/100dvh by the
+     status-bar height, so an in-flow bottom child is pushed off the bottom edge
+     and vanishes. Fixing it to bottom:0 (like every other piece of touch chrome —
+     the chrome-toggle, saves-menu, peek card and tray sheet) makes it immune to
+     that height mis-measurement; .map reserves its footprint below so nothing
+     hides behind it. */
   .tray-strip {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
     flex: none; display: flex; align-items: center; gap: 16px; width: 100%;
     border: none; border-top: 1px solid var(--gold-deep); background: var(--bg-2); color: var(--text);
+    box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.35);
     text-align: left; font-size: 13px; min-height: 44px;
     padding: 6px calc(16px + env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px))
       calc(16px + env(safe-area-inset-left, 0px));
   }
+  /* Reserve the fixed strip's footprint so the final grid row clears it. */
+  .map { padding-bottom: calc(16px + var(--tray-h) + env(safe-area-inset-bottom, 0px)); }
   .tray-strip .tray-stat { color: var(--text-soft); font-variant-numeric: tabular-nums; }
   .tray-strip .tray-stat b { color: var(--text); font-weight: 700; }
   .tray-strip .tray-stat b.over { color: var(--bad); }
