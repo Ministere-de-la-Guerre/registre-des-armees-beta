@@ -29,12 +29,18 @@ export interface MedallionHandlers {
   qtyOf: (key: string) => number;
   groupQtyOf: (card: UnitCard) => number;
   atCapOf: (card: UnitCard) => boolean;
+  /** Grid tap. Desktop: add immediately. Touch: first tap primes + peeks, a second
+   *  tap on the same unit adds (see Builder's primeOrAct). */
   onAdd: (card: UnitCard) => void;
+  /** Grid secondary. Desktop: right-click → full details. Touch: long-press →
+   *  remove one copy from the bar (deselect). */
   onDetails: (card: UnitCard) => void;
   onHover: (card: UnitCard, anchor: DOMRect) => void;
   onHoverEnd: () => void;
-  /** Touch peek (grid: long-press → simplified stat card). Inert on desktop. */
-  onPeek: (card: UnitCard) => void;
+  /** True when this unit is the touch-"primed" one: the next tap runs its action
+   *  (add / set commander) instead of re-showing its stat card. Always false on
+   *  desktop; drives the primed ring. */
+  isPrimed: (key: string) => boolean;
 }
 
 function UnitMedallion({ card, h }: { card: UnitCard; h: MedallionHandlers }) {
@@ -48,6 +54,7 @@ function UnitMedallion({ card, h }: { card: UnitCard; h: MedallionHandlers }) {
       capCount={h.groupQtyOf(card)}
       selected={h.isSelected(card.unitKey)}
       inStaffSlot={h.inStaffSlot(card.unitKey)}
+      primed={h.isPrimed(card.unitKey)}
       dimmed={h.isDimmed(card)}
       blocked={blocked}
       overBudget={h.isOverBudget(card)}
@@ -57,7 +64,6 @@ function UnitMedallion({ card, h }: { card: UnitCard; h: MedallionHandlers }) {
       onContextMenu={() => h.onDetails(card)}
       onHover={h.onHover}
       onHoverEnd={h.onHoverEnd}
-      onPeek={h.onPeek}
     />
   );
 }
@@ -97,6 +103,7 @@ export function BuilderGrid({
               card={g}
               selected={handlers.inStaffSlot(g.unitKey)}
               inStaffSlot={handlers.inStaffSlot(g.unitKey)}
+              primed={handlers.isPrimed(g.unitKey)}
               dimmed={handlers.isDimmed(g)}
               overBudget={handlers.isOverBudget(g)}
               overCorps={handlers.isOverCorps(g)}
@@ -104,7 +111,6 @@ export function BuilderGrid({
               onContextMenu={() => handlers.onDetails(g)}
               onHover={handlers.onHover}
               onHoverEnd={handlers.onHoverEnd}
-              onPeek={handlers.onPeek}
             />
           ))}
         </div>
@@ -139,6 +145,7 @@ export function BuilderGrid({
                           card={card}
                           selected={handlers.inStaffSlot(card.unitKey)}
                           inStaffSlot={handlers.inStaffSlot(card.unitKey)}
+                          primed={handlers.isPrimed(card.unitKey)}
                           dimmed={handlers.isDimmed(card)}
                           overBudget={handlers.isOverBudget(card)}
                           overCorps={handlers.isOverCorps(card)}
@@ -146,7 +153,6 @@ export function BuilderGrid({
                           onContextMenu={() => handlers.onDetails(card)}
                           onHover={handlers.onHover}
                           onHoverEnd={handlers.onHoverEnd}
-                          onPeek={handlers.onPeek}
                         />
                       ) : (
                         <UnitMedallion key={card.unitKey} card={card} h={handlers} />

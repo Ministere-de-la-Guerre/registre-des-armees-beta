@@ -32,6 +32,10 @@ export interface MedallionProps {
   capCount?: number;
   selected?: boolean;
   inStaffSlot?: boolean;
+  /** Touch grid only: this is the "primed" unit — its stat card has been shown by a
+   *  first tap, so the next tap adds it. Draws a highlight ring. Always false on
+   *  desktop (which has no two-tap model). */
+  primed?: boolean;
   dimmed?: boolean;
   blocked?: boolean;
   /** Selecting this unit would push the build past the 10,000 cost ceiling — its
@@ -66,6 +70,7 @@ export function Medallion({
   capCount,
   selected = false,
   inStaffSlot = false,
+  primed = false,
   dimmed = false,
   blocked = false,
   overBudget = false,
@@ -84,8 +89,10 @@ export function Medallion({
   const coarse = isCoarsePointer();
   // Touch model. On desktop (fine pointer) the hook ignores mouse pointers, so a
   // long-press never fires and right-click/hover behave exactly as before.
-  //   • Grid (peekOn "longpress"): tap = the primary action (add); long-press =
-  //     the simplified stat card. Right-click parity with details is dropped here.
+  //   • Grid: no `onPeek` is passed, so tap = onClick and long-press = onContextMenu.
+  //     The Builder wires those (on coarse pointers) to its two-tap model: first tap
+  //     primes + peeks, second tap adds; long-press removes a copy. Peeking is driven
+  //     from the Builder, not from here.
   //   • Tray (peekOn "tap"): tap = the simplified stat card; long-press keeps the
   //     right-click action (remove/clear).
   const peekActive = coarse && !!onPeek;
@@ -100,8 +107,8 @@ export function Medallion({
   return (
     <div
       className={`medallion${selected ? " selected" : ""}${inStaffSlot ? " staff" : ""}${
-        dimmed ? " dimmed" : ""
-      }${blocked ? " blocked" : ""}${overBudget ? " overbudget" : ""}${overCorps ? " overcorps" : ""}${atCap ? " atcap" : ""}${
+        primed ? " primed" : ""
+      }${dimmed ? " dimmed" : ""}${blocked ? " blocked" : ""}${overBudget ? " overbudget" : ""}${overCorps ? " overcorps" : ""}${atCap ? " atcap" : ""}${
         hideName ? " tray-mini" : ""
       }`}
       role="button"
