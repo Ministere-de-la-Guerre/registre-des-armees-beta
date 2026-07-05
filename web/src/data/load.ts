@@ -7,7 +7,10 @@
 
 import { dataUrl } from "./assets";
 import {
+  type CorpsEntry,
   type CorpsIndex,
+  type CorpsSide,
+  type CorpsTheatre,
   type FactionRoster,
   type GeneralKind,
   type UnitAbilities,
@@ -127,10 +130,55 @@ function withTowPlacements(cards: UnitCard[], factionKey: string): UnitCard[] {
   });
 }
 
+function strOrNum(v: unknown): string | number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  return typeof v === "string" ? v : "";
+}
+
+function normalizeCorpsEntry(raw: unknown): CorpsEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const factionKey = str(r.factionKey);
+  if (!factionKey) return null;
+  return {
+    factionKey,
+    name: str(r.name),
+    displayYear: strOrNum(r.displayYear),
+    displayRating: strOrNum(r.displayRating),
+    order: num(r.order) ?? 0,
+    flag: strOrNull(r.flag),
+    postSelectionFlag: strOrNull(r.postSelectionFlag),
+    isArmyCorps: bool(r.isArmyCorps),
+    cardCount: num(r.cardCount) ?? 0,
+  };
+}
+
+/** Normalize the corps index like normalizeCard does for units: drop malformed
+ *  records instead of blind-casting, so one bad field in corps-index.json can't
+ *  throw inside a render-phase useMemo and blank the whole app (white screen). */
+function normalizeCorpsIndex(raw: unknown): CorpsIndex {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const sidesRaw = Array.isArray(r.sides) ? r.sides : [];
+  const sides: CorpsSide[] = sidesRaw.map((s): CorpsSide => {
+    const so = (s && typeof s === "object" ? s : {}) as Record<string, unknown>;
+    const theatresRaw = Array.isArray(so.theatres) ? so.theatres : [];
+    const theatres: CorpsTheatre[] = theatresRaw.map((t): CorpsTheatre => {
+      const to = (t && typeof t === "object" ? t : {}) as Record<string, unknown>;
+      const corpsRaw = Array.isArray(to.corps) ? to.corps : [];
+      const corps = corpsRaw
+        .map(normalizeCorpsEntry)
+        .filter((c): c is CorpsEntry => c !== null);
+      return { theatre: str(to.theatre), corps };
+    });
+    return { side: str(so.side), theatres };
+  });
+  return { schemaVersion: num(r.schemaVersion) ?? 0, sides };
+}
+
 export async function loadCorpsIndex(): Promise<CorpsIndex> {
   const res = await fetch(dataUrl("corps-index.json"));
   if (!res.ok) throw new Error(`Failed to load corps index (${res.status})`);
-  return (await res.json()) as CorpsIndex;
+  return normalizeCorpsIndex(await res.json());
 }
 
 export async function loadFaction(factionKey: string): Promise<FactionRoster> {

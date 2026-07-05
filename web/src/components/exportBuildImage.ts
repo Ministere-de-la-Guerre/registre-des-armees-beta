@@ -62,12 +62,23 @@ const TOP_PAD = 12; // room for the badges that overhang the portrait top
 const COST_H = 20;
 const MIN_WIDTH = 360;
 
-function loadImage(src: string): Promise<HTMLImageElement | null> {
+function loadImage(src: string, timeoutMs = 15000): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.decoding = "async";
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
+    let settled = false;
+    const settle = (result: HTMLImageElement | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    // A request that neither loads nor errors (a stalled icon fetch on a flaky
+    // network) would otherwise leave Promise.all in renderBuildImage hanging
+    // forever, so the export button silently does nothing. Time out to null.
+    const timer = setTimeout(() => settle(null), timeoutMs);
+    img.onload = () => settle(img);
+    img.onerror = () => settle(null);
     img.src = src;
   });
 }

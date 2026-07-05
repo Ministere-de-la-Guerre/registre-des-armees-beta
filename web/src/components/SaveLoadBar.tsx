@@ -156,8 +156,13 @@ export function SaveLoadBar({
     const a = document.createElement("a");
     a.href = url;
     a.download = `${saved.name.replace(/[^\w-]+/g, "_")}.json`;
+    // Append to the DOM and defer the revoke: clicking a detached anchor and
+    // revoking synchronously is a no-op on some browsers (matches downloadBlob in
+    // exportBuildImage.ts and OfflinePanel.downloadJson).
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
   };
 
   const doImport = (file: File) => {
@@ -168,8 +173,21 @@ export function SaveLoadBar({
         onMessage("Import failed: not a valid build file.");
         return;
       }
+      // Import upserts by id: re-importing an older export of a build you have
+      // since edited and re-saved would silently clobber the newer stored save.
+      // Confirm before overwriting an existing save (Save As confirms too).
+      const existing = repo.get(saved.id);
+      if (existing && !window.confirm(`This will overwrite the saved build “${existing.name}” with the imported file. Continue?`)) {
+        return;
+      }
+      // Importing into the open corps replaces the on-screen build, discarding
+      // unsaved edits — confirm just like Load does.
+      const loadsIntoCurrent = saved.factionKey === roster.factionKey;
+      if (loadsIntoCurrent && dirty && !window.confirm("Discard unsaved changes and load the imported build?")) {
+        return;
+      }
       persistAndReport(repo.save(saved), `Imported “${saved.name}”.`);
-      if (saved.factionKey === roster.factionKey) onLoaded(resolveSavedBuild(saved, roster), saved);
+      if (loadsIntoCurrent) onLoaded(resolveSavedBuild(saved, roster), saved);
       else onMessage(`Imported “${saved.name}” for another corps. Open it to load.`);
     };
     reader.readAsText(file);
@@ -229,6 +247,12 @@ export function SaveLoadBar({
                       initial: s.name,
                       submitLabel: "Rename",
                       onSubmit: (n) => {
+                        // Guard against silently creating two saves that share a
+                        // display name in this corps (Save As already checks this).
+                        const clash = repo.findByName(n, s.factionKey);
+                        if (clash && clash.id !== s.id && !window.confirm(`Another build named “${n}” already exists for this corps. Keep both with the same name?`)) {
+                          return;
+                        }
                         persistAndReport(repo.rename(s.id, n), `Renamed to “${n}”.`);
                         if (loaded?.id === s.id) onSaved({ ...s, name: n });
                       },

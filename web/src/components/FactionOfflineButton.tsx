@@ -27,10 +27,16 @@ export function FactionOfflineButton({ roster }: { roster: FactionRoster }) {
   const save = async () => {
     setState("saving");
     setPct(0);
-    const res = await downloadFactionOffline(roster, ({ done, total }) =>
-      setPct(total ? Math.round((done / total) * 100) : 100),
-    );
-    setState(res.ok ? "saved" : "error");
+    try {
+      const res = await downloadFactionOffline(roster, ({ done, total }) =>
+        setPct(total ? Math.round((done / total) * 100) : 100),
+      );
+      setState(res.ok ? "saved" : "error");
+    } catch {
+      // downloadFactionOffline is written never to reject, but guard anyway so an
+      // unexpected throw can't pin the button disabled at "Saving …" forever.
+      setState("error");
+    }
   };
 
   const label =
