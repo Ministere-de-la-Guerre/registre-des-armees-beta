@@ -41,6 +41,7 @@ import { TowRollModal } from "./TowRollModal";
 import { TowGenerateModal } from "./TowGenerateModal";
 import { SaveLoadBar } from "./SaveLoadBar";
 import { Tooltip } from "./Tooltip";
+import { deliverImage, renderBuildImage } from "./exportBuildImage";
 import { isCoarsePointer, isPhone } from "./useCoarsePointer";
 
 // Shared empties for the combined-corps view, where the grid "divisions" are
@@ -317,6 +318,25 @@ export function Builder({
     if (!resetGeneralsAvailable) return;
     setBuild((b) => resetCombatGenerals(index, b));
     setMessage("Reset combat generals to their base units.");
+  };
+
+  // Export the build as a stretched-out single-line image (like the desktop unit
+  // bar): copied to the clipboard on desktop, saved/shared to the device on touch.
+  const hasBuild = build.instances.length > 0 || build.staffSlotUnitKey !== null;
+  const exportImage = async () => {
+    if (!hasBuild) return;
+    try {
+      const blob = await renderBuildImage(index, build, {
+        title: roster.armyCorpsName || roster.factionKey,
+        subtitle: `${summary.totalCards} cards · ${summary.totalMen.toLocaleString()} men · ${summary.price.finalCost.toLocaleString()} gold`,
+      });
+      const base = (roster.armyCorpsName || roster.factionKey).replace(/[^\w-]+/g, "_").slice(0, 60) || "build";
+      const result = await deliverImage(blob, `${base}.png`, isCoarsePointer());
+      if (result === "copied") setMessage("Build image copied to clipboard.");
+      else if (result === "saved") setMessage("Build image saved.");
+    } catch {
+      setMessage("Couldn't export the build image.");
+    }
   };
 
   // Touch (phones/tablets) uses the two-tap grid model; desktop/Electron stays
@@ -691,6 +711,8 @@ export function Builder({
         autoGeneralsDisabled={!autoGeneralsAvailable}
         onResetGenerals={resetCombatGeneralsHandler}
         resetGeneralsDisabled={!resetGeneralsAvailable}
+        onExportImage={exportImage}
+        exportDisabled={!hasBuild}
         onDetails={setDetail}
         onHover={(c, a) => setHovered({ card: c, anchor: a })}
         onHoverEnd={() => setHovered(null)}
