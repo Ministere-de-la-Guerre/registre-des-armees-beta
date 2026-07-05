@@ -36,6 +36,8 @@ import { combatPool, offeredCombatKeys, offeredStaffKeys, rotationApplies, staff
 import { LEGACY_TOW_MAX_SOURCE_CORPS, isCardOverCorpsCeiling, towCorpsCeiling } from "../state/towRoll";
 import { compareTowSourceCorpsIds, isTowFactionKey, towBrigadeLabel } from "../domain/tow";
 import { towCorpsFullNameMap } from "../domain/towCorpsNames";
+import { buggedUniformKey } from "../domain/buggedUniforms";
+import { BuggedUniformModal } from "./BuggedUniformModal";
 import { RotationModal } from "./RotationModal";
 import { TowRollModal } from "./TowRollModal";
 import { TowGenerateModal } from "./TowGenerateModal";
@@ -91,6 +93,11 @@ export function Builder({
   // it stays primed, a tap adds it (rather than re-peeking); tapping a different unit
   // moves the priming. Always null on desktop, which adds on the first click.
   const [primedKey, setPrimedKey] = useState<string | null>(null);
+  // Bugged-uniform advisory: the card whose warning popup is currently open, and
+  // the set of regiment keys already warned about (so re-adding copies of the same
+  // 23e léger doesn't re-pop the modal). Both reset when the roster changes.
+  const [buggedWarning, setBuggedWarning] = useState<UnitCard | null>(null);
+  const [warnedBugged, setWarnedBugged] = useState<Set<string>>(() => new Set());
   const [loadedSaved, setLoadedSaved] = useState<SavedBuild | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [rotationOpen, setRotationOpen] = useState(false);
@@ -121,6 +128,8 @@ export function Builder({
     setHovered(null);
     setPeek(null);
     setPrimedKey(null);
+    setBuggedWarning(null);
+    setWarnedBugged(new Set());
     setTowRollOpen(false);
     setTowGenerateOpen(false);
     // Enable every source corps by default (the combined view pools them all;
@@ -228,6 +237,15 @@ export function Builder({
   // in the build beyond the first 4 rolled, or adding it would open a 5th corps.
   const isOverCorps = (card: UnitCard) => (towBuild ? isCardOverCorpsCeiling(card, towBuild) : false);
 
+  // Pop the bugged-uniform advisory the first time a copy of one of the affected
+  // 23e léger regiments (see domain/buggedUniforms) is added to this build.
+  const maybeWarnBugged = (card: UnitCard) => {
+    const key = buggedUniformKey(card);
+    if (!key || warnedBugged.has(key)) return;
+    setWarnedBugged((s) => new Set(s).add(key));
+    setBuggedWarning(card);
+  };
+
   const tryAdd = (card: UnitCard) => {
     const reason = blockReasons.get(card.unitKey);
     if (reason) {
@@ -235,6 +253,7 @@ export function Builder({
       return;
     }
     setBuild((b) => ({ ...b, instances: [...b.instances, { id: makeInstanceId(), unitKey: card.unitKey }] }));
+    maybeWarnBugged(card);
   };
 
   const removeInstance = (id: string) =>
@@ -261,6 +280,16 @@ export function Builder({
       setPrimedKey(card.unitKey);
       setPeek(card);
     }
+  };
+
+  // Dismiss the touch peek and its two-tap prime together. The prime must never
+  // outlive the stat card: if it did, the next tap on the same unit would run its
+  // action (add / set commander) instead of re-peeking. Used for every path that
+  // clears the peek without acting (scroll/outside-tap dismiss, opening full
+  // details) so `primedKey` can't desync from `peek`.
+  const dismissPeek = () => {
+    setPeek(null);
+    setPrimedKey(null);
   };
 
   const toggleStaff = (card: UnitCard) => {
@@ -716,7 +745,12 @@ export function Builder({
         onDetails={setDetail}
         onHover={(c, a) => setHovered({ card: c, anchor: a })}
         onHoverEnd={() => setHovered(null)}
-        onPeek={setPeek}
+        onPeek={(card) => {
+          // A tray peek is not a grid prime; clear any lingering grid prime so a
+          // later tap on that grid unit re-peeks rather than acting.
+          setPrimedKey(null);
+          setPeek(card);
+        }}
         corpsStat={isTow && towBuild ? { count: towBuild.count, max: LEGACY_TOW_MAX_SOURCE_CORPS, over: towBuild.over } : null}
       />
 
@@ -735,9 +769,9 @@ export function Builder({
           blockReason={blockReasons.get(peek.unitKey) ?? null}
           onFullDetails={() => {
             setDetail(peek);
-            setPeek(null);
+            dismissPeek();
           }}
-          onDismiss={() => setPeek(null)}
+          onDismiss={dismissPeek}
         />
       )}
       {detail && (
@@ -763,6 +797,9 @@ export function Builder({
       )}
       {towGenerateOpen && (
         <TowGenerateModal roster={roster} index={index} build={build} onClose={() => setTowGenerateOpen(false)} />
+      )}
+      {buggedWarning && (
+        <BuggedUniformModal card={buggedWarning} onClose={() => setBuggedWarning(null)} />
       )}
       {message && <div className="toast" role="status">{message}</div>}
     </div>

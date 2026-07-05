@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -65,6 +65,12 @@ class UnitCard:
     men_display: int | None = None
     unit_name: str = ""
     placement_source: str = ""
+    # Shared cap-group anchor values, resolved from the base unit of the cap group
+    # (see resolve_cap_groups). None until resolved; consumers fall back to this
+    # card's own cap / class. Kept in parity with groupCap / underlyingUnitClass in
+    # web/src/rules/rules.ts, populated by tools/build_web_data.py step 2.
+    group_cap: int | None = None
+    underlying_unit_class: str | None = None
 
     @classmethod
     def from_csv_row(cls, row: Mapping[str, str]) -> "UnitCard":
@@ -198,9 +204,42 @@ def parse_placement(code: str) -> Placement | None:
     return Placement(int(match.group("division")), int(match.group("brigade")))
 
 
+def resolve_cap_groups(cards: Iterable[UnitCard]) -> list[UnitCard]:
+    """Populate each card's group_cap and underlying_unit_class from the base
+    (non-commander) unit that anchors its shared cap group, resolved per faction.
+
+    Mirrors step 2 of tools/build_web_data.py so this module and the browser data
+    agree: a commander variant counts against its *base* unit's cap (not the
+    minimum across the group) and, when it is a combat general, occupies a slot of
+    its base unit's class. Falls back to the card's own cap / class when no base
+    row is present (e.g. an isolated selection)."""
+    cards = list(cards)
+    base_cap: dict[tuple[str, str], int] = {}
+    base_class: dict[tuple[str, str], str] = {}
+    for card in cards:
+        if card.unit_key != card.cap_group_key:
+            continue
+        key = (card.faction_key, card.cap_group_key)
+        base_cap[key] = card.cap
+        if card.unit_class != "general":
+            base_class[key] = card.unit_class
+    resolved: list[UnitCard] = []
+    for card in cards:
+        key = (card.faction_key, card.cap_group_key)
+        resolved.append(
+            replace(
+                card,
+                group_cap=base_cap.get(key, card.cap),
+                underlying_unit_class=base_class.get(key, card.unit_class),
+            )
+        )
+    return resolved
+
+
 def load_unit_cards(csv_path: str | Path) -> list[UnitCard]:
     with Path(csv_path).open(newline="", encoding="utf-8-sig") as handle:
-        return [UnitCard.from_csv_row(row) for row in csv.DictReader(handle)]
+        cards = [UnitCard.from_csv_row(row) for row in csv.DictReader(handle)]
+    return resolve_cap_groups(cards)
 
 
 def _is_support_unit(card: UnitCard) -> bool:
@@ -410,6 +449,19 @@ def ac_selection_general_maxima(faction_key: str) -> GeneralCaps:
     return GeneralCaps(staff=caps.staff, combat=caps.combat + 2)
 
 
+def _capped_class_of(card: UnitCard) -> str:
+    """Class a card occupies for the artillery / heavy-cavalry caps. A combat
+    general consumes a slot of the unit it leads, so it counts by its underlying
+    unit class. Mirrors cappedClassOf in web/src/rules/rules.ts."""
+    if (
+        card.is_general
+        and card.underlying_unit_class
+        and classify_general(card) == "combat"
+    ):
+        return card.underlying_unit_class
+    return card.unit_class
+
+
 def check_known_limits(
     selected_cards: Sequence[UnitCard],
     faction_key: str,
@@ -418,6 +470,13 @@ def check_known_limits(
     staff_slot_index: int | None = None,
 ) -> LimitCheck:
     counts = Counter(card.unit_class for card in selected_cards)
+    # Recount the capped classes (artillery / heavy cavalry) by underlying class so
+    # a combat general leading such a unit counts against its cap. Mirrors the
+    # cappedClassOf recount in web/src/rules/rules.ts.
+    for capped_class in ("artillery_foot", "artillery_horse", "cavalry_heavy"):
+        counts[capped_class] = sum(
+            1 for card in selected_cards if _capped_class_of(card) == capped_class
+        )
     counts["total_cards"] = len(selected_cards)
     counts["staff_generals"] = 0
     counts["combat_generals"] = 0
@@ -468,7 +527,14 @@ def check_known_limits(
     for card in selected_cards:
         cap_groups[(card.faction_key, card.cap_group_key)].append(card)
     for (card_faction, group_key), cards in sorted(cap_groups.items()):
-        positive_caps = [card.cap for card in cards if card.cap > 0]
+        # The shared group cap is the base unit's cap (a commander variant counts
+        # against its underlying unit's cap), mirroring c.groupCap ?? c.cap in
+        # web/src/rules/rules.ts — not the minimum across the group's members.
+        positive_caps = [
+            (card.group_cap if card.group_cap is not None else card.cap)
+            for card in cards
+        ]
+        positive_caps = [cap for cap in positive_caps if cap > 0]
         if not positive_caps:
             continue
         maximum = min(positive_caps)

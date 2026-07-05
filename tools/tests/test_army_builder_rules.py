@@ -15,6 +15,7 @@ from tools.army_builder_rules import (
     calculate_army_cost,
     check_known_limits,
     general_caps,
+    resolve_cap_groups,
 )
 
 
@@ -31,6 +32,8 @@ def card(
     men_display: int | None = None,
     unit_name: str = "",
     placement_source: str = "",
+    group_cap: int | None = None,
+    underlying_unit_class: str | None = None,
 ) -> UnitCard:
     return UnitCard(
         unit_key=key,
@@ -48,6 +51,8 @@ def card(
         men_display=men_display,
         unit_name=unit_name,
         placement_source=placement_source,
+        group_cap=group_cap,
+        underlying_unit_class=underlying_unit_class,
     )
 
 
@@ -220,6 +225,76 @@ class LimitTests(unittest.TestCase):
         rules = {violation.rule for violation in result.violations}
         self.assertEqual(rules, {"artillery_foot", "artillery_horse"})
         self.assertEqual(MAX_BRIGADE_SLOTS_PER_DIVISION, 7)
+
+    def test_combat_general_counts_against_the_artillery_cap_it_leads(self) -> None:
+        # Two foot batteries (at MAX_FOOT_ARTILLERY=2) + a combat general leading a
+        # foot battery = 3 > 2. Mirrors rules.test.ts "combat generals count against
+        # the artillery caps of the unit they lead".
+        faction = "france"
+        selected = [
+            card("foot_0", faction=faction, unit_class="artillery_foot"),
+            card("foot_1", faction=faction, unit_class="artillery_foot"),
+            card(
+                "foot_gen",
+                faction=faction,
+                unit_class="general",
+                men=80,
+                underlying_unit_class="artillery_foot",
+            ),
+        ]
+        result = check_known_limits(selected, faction)
+        self.assertEqual(result.counts["artillery_foot"], 3)
+        self.assertTrue(
+            any(violation.rule == "artillery_foot" for violation in result.violations)
+        )
+
+    def test_multi_cap_base_unit_and_commander_share_the_base_cap(self) -> None:
+        # Base infantry cap 2; commander variant cap 1 but shares the base cap (2).
+        # Mirrors rules.test.ts "multi-cap base unit may be taken up to its cap, and
+        # the commander shares it".
+        faction = "france"
+        base = card("ntw3_inf_line_005_999_3237", faction=faction, cap=2, group_cap=2)
+        commander = card(
+            "ntw3_inf_line_005_999_3237_com_2400",
+            faction=faction,
+            unit_class="general",
+            men=80,
+            cap=1,
+            group_cap=2,
+        )
+        rule = f"unit_cap:{faction}:{base.unit_key}"
+        # Two of the base unit is allowed (cap 2), not falsely capped at 1.
+        legal = check_known_limits([base, base], faction)
+        self.assertFalse(any(v.rule == rule for v in legal.violations))
+        # base + base + commander = 3 against a shared cap of 2 -> violation.
+        over = check_known_limits([base, base, commander], faction)
+        violation = next(v for v in over.violations if v.rule == rule)
+        self.assertEqual(violation.maximum, 2)
+        self.assertEqual(violation.actual, 3)
+
+    def test_resolve_cap_groups_uses_base_unit_cap_and_class(self) -> None:
+        # resolve_cap_groups must mirror build_web_data.py step 2: a commander
+        # variant inherits its base unit's cap and (combat) underlying class.
+        faction = "france"
+        base = card(
+            "ntw3_art_foot_080_006_0209",
+            faction=faction,
+            unit_class="artillery_foot",
+            cap=2,
+        )
+        commander = card(
+            "ntw3_art_foot_080_006_0209_com_0308",
+            faction=faction,
+            unit_class="general",
+            men=80,
+            cap=1,
+        )
+        resolved = {c.unit_key: c for c in resolve_cap_groups([base, commander])}
+        self.assertEqual(resolved[base.unit_key].group_cap, 2)
+        self.assertEqual(resolved[commander.unit_key].group_cap, 2)
+        self.assertEqual(
+            resolved[commander.unit_key].underlying_unit_class, "artillery_foot"
+        )
 
     def test_staff_general_is_based_only_on_exact_raw_men(self) -> None:
         faction = "france"

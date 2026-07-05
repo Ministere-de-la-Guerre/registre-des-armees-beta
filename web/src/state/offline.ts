@@ -19,12 +19,18 @@ let versionKeyCache: string | null = null;
 export async function getDataVersionKey(): Promise<string> {
   if (versionKeyCache) return versionKeyCache;
   try {
-    const res = await fetch(dataUrl("data-version.json"));
-    versionKeyCache = dataVersionKey((await res.json()) as DataVersion);
+    // no-store so an HTTP-cached stale stamp can't bucket fresh downloads under a
+    // doomed key (the asset fetches below are already no-store).
+    const res = await fetch(dataUrl("data-version.json"), { cache: "no-store" });
+    const key = dataVersionKey((await res.json()) as DataVersion);
+    versionKeyCache = key; // only memoize a real stamp; never poison the session
+    return key;
   } catch {
-    versionKeyCache = "0";
+    // Transient failure — fall back to "0" for this call only, so a later call can
+    // recover the real key instead of the whole session landing in `rda-offline-0`
+    // (which the next SW activation deletes wholesale).
+    return "0";
   }
-  return versionKeyCache;
 }
 
 function rosterAssetUrls(roster: FactionRoster): string[] {
@@ -62,9 +68,16 @@ export async function downloadFactionOffline(
 ): Promise<DownloadResult> {
   if (!offlineSupported()) return { ok: false, cached: 0, total: 0, error: "Offline caching isn't available here." };
   const key = await getDataVersionKey();
-  const cache = await caches.open(offlineCacheName(key));
   const urls = [dataUrl(`factions/${roster.factionKey}.json`), ...rosterAssetUrls(roster)];
   const total = urls.length;
+  let cache: Cache;
+  try {
+    cache = await caches.open(offlineCacheName(key));
+  } catch (e) {
+    // caches.open can reject (quota / private-mode). Report it instead of leaving
+    // the caller's promise rejected — a rejection wedges the button at "Saving 0%".
+    return { ok: false, cached: 0, total, error: `Couldn't open the offline cache: ${String(e)}` };
+  }
   let done = 0;
   let failed = 0;
   onProgress?.({ done, total });
@@ -74,11 +87,19 @@ export async function downloadFactionOffline(
     while (next < urls.length) {
       const url = urls[next++];
       try {
-        const already = await caches.match(url);
+        // Only a hit in the DURABLE offline cache counts as already-saved. An
+        // asset sitting in the evictable runtime cache (from ordinary browsing) is
+        // promoted into the offline cache so it can't silently vanish later.
+        const already = await cache.match(url);
         if (!already) {
-          const res = await fetch(url, { cache: "no-store" });
-          if (res.ok) await cache.put(url, res.clone());
-          else failed++;
+          const runtime = await caches.match(url);
+          if (runtime) {
+            await cache.put(url, runtime);
+          } else {
+            const res = await fetch(url, { cache: "no-store" });
+            if (res.ok) await cache.put(url, res.clone());
+            else failed++;
+          }
         }
       } catch {
         failed++;
@@ -90,12 +111,19 @@ export async function downloadFactionOffline(
   const CONCURRENCY = 6;
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker));
 
-  await cache.put(
-    markerUrl(key, roster.factionKey),
-    new Response(JSON.stringify({ at: Date.now(), cached: total - failed, total }), {
-      headers: { "content-type": "application/json" },
-    }),
-  );
+  try {
+    await cache.put(
+      markerUrl(key, roster.factionKey),
+      new Response(JSON.stringify({ at: Date.now(), cached: total - failed, total }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  } catch (e) {
+    // A quota failure on the marker write (plausible right after a large download
+    // fills quota) must surface as an error, not an unhandled rejection that pins
+    // the button at "Saving 100%" with no recovery.
+    return { ok: false, cached: total - failed, total, error: `Couldn't finalize the offline save: ${String(e)}` };
+  }
   return { ok: failed === 0, cached: total - failed, total, error: failed ? `${failed} file(s) failed to download` : undefined };
 }
 
