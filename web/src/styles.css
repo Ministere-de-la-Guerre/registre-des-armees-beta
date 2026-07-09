@@ -210,6 +210,11 @@ input::placeholder { color: #6f7888; }
    ceilings; the "Corps N/4" header stat and the breakdown banner name the limit. */
 .medallion.overcorps .oval,
 .medallion.overcorps:hover .oval { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad), var(--shadow); }
+/* Touch two-tap "primed" state: a first tap has shown this unit's stat card and armed
+   it, so the next tap adds it. A gold ring marks which unit the next tap will act on.
+   Never set on desktop (no two-tap model). Red warning frames still win their border. */
+.medallion.primed .oval { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold), var(--shadow); }
+.medallion.primed.overbudget .oval, .medallion.primed.overcorps .oval { border-color: var(--bad); }
 
 /* Men count above the oval frame (own stacking context), never clipped. */
 .medallion .men {
@@ -226,6 +231,12 @@ input::placeholder { color: #6f7888; }
   border: 1px solid var(--line-2); border-radius: 6px; padding: 0 5px; line-height: 15px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
+/* In the grid the speed pill sits at the top-left with the cap badge directly
+   beneath it, overlaying the oval (the tray anchors the speed pill above the oval
+   instead — see `.tray .medallion .speed`). The cap badge is semi-transparent so
+   it hides less of the portrait. */
+.medallion:not(.tray-mini) .speed { top: -6px; left: 0; }
+.medallion:not(.tray-mini) .qty { top: 15px; }
 .medallion .coststrip {
   position: absolute; left: 0; right: 0; bottom: 0;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.8)); display: flex; justify-content: center;
@@ -241,10 +252,11 @@ input::placeholder { color: #6f7888; }
 /* Cap usage badge (taken / cap) — a pill so multi-character text fits. */
 .medallion .qty.cap {
   width: auto; min-width: 19px; border-radius: 9px; padding: 0 5px; font-size: 10px;
-  background: rgba(20, 26, 34, 0.85); border-color: var(--line-2);
+  background: rgba(20, 26, 34, 0.58); border-color: var(--line-2);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
-.medallion.selected .qty.cap { background: var(--azure); border-color: #fff; }
-.medallion .qty.cap.full { background: var(--bad-deep); border-color: var(--bad); color: #fff; }
+.medallion.selected .qty.cap { background: rgba(90, 162, 230, 0.72); border-color: #fff; }
+.medallion .qty.cap.full { background: rgba(138, 53, 40, 0.72); border-color: var(--bad); color: #fff; }
 .medallion .stars {
   position: absolute; left: 50%; top: 1px; transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.72); border: 1px solid var(--gold); color: var(--gold-bright);
@@ -373,6 +385,12 @@ input::placeholder { color: #6f7888; }
   border-bottom-left-radius: 0; border-bottom-right-radius: 0;
 }
 .tray .reset-generals:hover:not(:disabled) { background: var(--panel-3); border-color: var(--gold-deep); }
+.tray .export-image {
+  display: flex; flex-direction: row; gap: 4px; line-height: 1.05; padding: 3px 10px;
+  border-color: var(--azure-deep); color: var(--azure); background: var(--bg-2);
+  border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+}
+.tray .export-image:hover:not(:disabled) { background: var(--azure-deep); color: #fff; }
 .tray-mini .name { display: none; }
 .tray-mini { width: 54px; }
 
@@ -429,6 +447,15 @@ input::placeholder { color: #6f7888; }
 .rot-rel { color: var(--text-soft); }
 .rot-alt { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 11.5px; color: var(--text-soft); }
 .rot-never { color: var(--bad); }
+.rot-gens { list-style: none; margin: 7px 0 0; display: flex; flex-direction: column; gap: 5px; }
+.rot-gen { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+.rot-name .rot-rel { font-weight: 400; }
+/* Same-nearest-time rows in the per-general view read as one connected group. */
+.rot-row-cont { border-top-left-radius: 0; border-top-right-radius: 0; margin-top: -10px; border-top: 1px dashed var(--line-2); }
+/* Segmented view switch in the rotation popup head. */
+.rot-seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; margin-right: 8px; flex: none; }
+.rot-seg button { background: transparent; color: var(--text); border: none; font-size: 11px; padding: 3px 9px; cursor: pointer; white-space: nowrap; }
+.rot-seg button.on { background: var(--gold-bright); color: #20160a; font-weight: 700; }
 .rot-debug { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
 .rot-debug > summary { cursor: pointer; font-size: 12px; color: var(--gold-bright); }
 .rot-debug-body { margin-top: 8px; font-size: 12.5px; line-height: 1.5; display: flex; flex-direction: column; gap: 4px; }
@@ -588,6 +615,35 @@ input::placeholder { color: #6f7888; }
   }
 }
 
+/* ----------------------------------------------------------------------------
+   iPad header scroller. iPadOS Safari masquerades as desktop (fine pointer), so
+   the coarse-pointer block below never fires on it and the faction controls bar
+   clips instead of scrolling. The `.tablet-touch` class (set in App.tsx only when
+   navigator identifies a real iPad — never a Mac, never Electron) re-applies just
+   the header swipe-scroller and its coupled Save/Load bottom sheet, mirroring the
+   coarse rules. The rest of the mobile chrome stays coarse-only by design. Keep
+   these two rule groups in sync with their counterparts in the coarse block.
+   ---------------------------------------------------------------------------- */
+.app.tablet-touch .corps-header {
+  flex-wrap: nowrap;
+  gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.app.tablet-touch .corps-header::-webkit-scrollbar { display: none; }
+.app.tablet-touch .corps-header > * { flex-shrink: 0; }
+.app.tablet-touch .corps-header .spacer { display: none; }
+.app.tablet-touch .corps-header .btn { min-height: 44px; }
+.app.tablet-touch .saves-menu {
+  position: fixed; left: 0; right: 0; top: auto; bottom: 0;
+  min-width: 0; width: 100%; max-height: 70dvh;
+  border-radius: 14px 14px 0 0;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+  z-index: 95;
+}
+
 /* ============================================================================
    MOBILE UX PASS (phones/tablets only). Everything below is gated to coarse
    pointers, so desktop browsers AND the Electron build (hover: hover / pointer:
@@ -645,23 +701,60 @@ input::placeholder { color: #6f7888; }
   .app.chrome-collapsed .corps-header,
   .app.chrome-collapsed .tow-warning.banner { display: none; }
 
-  /* Expanded, the controls bar keeps the existing readable wrapping (never
-     font-shrinks) and just bumps to 44px touch targets. We deliberately do NOT
-     make it an overflow scroller: that would clip the absolutely-positioned
-     Save/Load dropdown. The chevron tab is the space saver, not shrinking. */
+  /* Expanded, the controls bar is a single horizontal row the player swipes
+     through (never font-shrinks or wraps into a tall block whose overflowing
+     stats clip off-screen), at readable/44px-tap size. The Save/Load dropdown
+     would be clipped by this scroller, so it is lifted to a fixed bottom sheet
+     below. The chevron tab still hides the whole bar when the grid needs the room. */
+  .corps-header {
+    flex-wrap: nowrap;
+    gap: 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .corps-header::-webkit-scrollbar { display: none; }
+  /* Keep every control at its natural, readable width — the row scrolls instead
+     of squeezing items. */
+  .corps-header > * { flex-shrink: 0; }
   .corps-header .spacer { display: none; }
   .corps-header .btn { min-height: 44px; }
+
+  /* The Load dropdown is a descendant of the header's horizontal scroller, which
+     would clip it. On touch it rises as a fixed bottom sheet (matching the other
+     modals) instead of an absolute dropdown anchored to the button, so it escapes
+     the clip and stays thumb-reachable. */
+  .saves-menu {
+    position: fixed; left: 0; right: 0; top: auto; bottom: 0;
+    min-width: 0; width: 100%; max-height: 70dvh;
+    border-radius: 14px 14px 0 0;
+    padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+    z-index: 95;
+  }
 
   /* --- Part 1a: collapsible bottom-sheet tray -----------------------------
      The always-present slim strip (running totals) replaces the desktop 31-slot row;
      tapping it raises a scrollable sheet of the actual selections at grid size. */
+  /* Pinned to the visual bottom rather than left as the last in-flow flex child.
+     In an iOS standalone PWA (apple-mobile-web-app-capable + black-translucent +
+     viewport-fit=cover) the home-screen webview over-reports 100vh/100dvh by the
+     status-bar height, so an in-flow bottom child is pushed off the bottom edge
+     and vanishes. Fixing it to bottom:0 (like every other piece of touch chrome —
+     the chrome-toggle, saves-menu, peek card and tray sheet) makes it immune to
+     that height mis-measurement; .map reserves its footprint below so nothing
+     hides behind it. */
   .tray-strip {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
     flex: none; display: flex; align-items: center; gap: 16px; width: 100%;
     border: none; border-top: 1px solid var(--gold-deep); background: var(--bg-2); color: var(--text);
+    box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.35);
     text-align: left; font-size: 13px; min-height: 44px;
     padding: 6px calc(16px + env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px))
       calc(16px + env(safe-area-inset-left, 0px));
   }
+  /* Reserve the fixed strip's footprint so the final grid row clears it. */
+  .map { padding-bottom: calc(16px + var(--tray-h) + env(safe-area-inset-bottom, 0px)); }
   .tray-strip .tray-stat { color: var(--text-soft); font-variant-numeric: tabular-nums; }
   .tray-strip .tray-stat b { color: var(--text); font-weight: 700; }
   .tray-strip .tray-stat b.over { color: var(--bad); }
@@ -693,11 +786,12 @@ input::placeholder { color: #6f7888; }
   .tray-sheet-staff .empty-oval { width: 72px; aspect-ratio: 0.84 / 1; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line-2); }
   .tray-sheet-empty { color: var(--text-soft); font-size: 13px; padding: 8px 4px; }
   .tray-sheet-actions {
-    flex: none; display: flex; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line);
+    flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line);
   }
-  .tray-sheet-actions .btn { flex: 1; min-height: 44px; }
+  .tray-sheet-actions .btn { flex: 1 1 40%; min-height: 44px; }
   .tray-sheet-actions .clear-build { border-color: var(--bad-deep); color: var(--bad); }
   .tray-sheet-actions .auto-generals { border-color: var(--gold-deep); color: var(--gold-bright); }
+  .tray-sheet-actions .export-image { border-color: var(--azure-deep); color: var(--azure); }
 }
 
 /* --- Part 4: download-all progress (web target only; layout is pointer-agnostic) */

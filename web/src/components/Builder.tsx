@@ -36,11 +36,15 @@ import { combatPool, offeredCombatKeys, offeredStaffKeys, rotationApplies, staff
 import { LEGACY_TOW_MAX_SOURCE_CORPS, isCardOverCorpsCeiling, towCorpsCeiling } from "../state/towRoll";
 import { compareTowSourceCorpsIds, isTowFactionKey, towBrigadeLabel } from "../domain/tow";
 import { towCorpsFullNameMap } from "../domain/towCorpsNames";
+import { buggedUniformKey } from "../domain/buggedUniforms";
+import { BuggedUniformModal } from "./BuggedUniformModal";
 import { RotationModal } from "./RotationModal";
 import { TowRollModal } from "./TowRollModal";
 import { TowGenerateModal } from "./TowGenerateModal";
 import { SaveLoadBar } from "./SaveLoadBar";
 import { Tooltip } from "./Tooltip";
+import { deliverImage, renderBuildImage } from "./exportBuildImage";
+import { isCoarsePointer, isPhone } from "./useCoarsePointer";
 
 // Shared empties for the combined-corps view, where the grid "divisions" are
 // brigade types (no formation discounts — TOW earns none — so no group meta).
@@ -76,12 +80,24 @@ export function Builder({
   const [build, setBuild] = useState<BuildState>(emptyBuild);
   const [filters, setFilters] = useState<FilterState>(() => defaultFiltersFor(roster.factionKey));
   const [density, setDensity] = useState<"comfortable" | "compact">("compact");
-  const [filtersOpen, setFiltersOpen] = useState(true);
+  // Filters start open on desktop/tablets but collapsed on phones, where the
+  // drawer would otherwise bury the unit grid on first load (user can still open
+  // it via the header "Filters" button).
+  const [filtersOpen, setFiltersOpen] = useState(() => !isPhone());
   const [detail, setDetail] = useState<UnitCard | null>(null);
   const [hovered, setHovered] = useState<{ card: UnitCard; anchor: DOMRect } | null>(null);
   // Touch peek: the simplified stat card shown by long-press (grid) or tap (tray).
   // Separate from `hovered` (which is desktop-only) and from `detail` (full panel).
   const [peek, setPeek] = useState<UnitCard | null>(null);
+  // Touch grid two-tap model: the unit whose stat card a first tap has shown. While
+  // it stays primed, a tap adds it (rather than re-peeking); tapping a different unit
+  // moves the priming. Always null on desktop, which adds on the first click.
+  const [primedKey, setPrimedKey] = useState<string | null>(null);
+  // Bugged-uniform advisory: the card whose warning popup is currently open, and
+  // the set of regiment keys already warned about (so re-adding copies of the same
+  // 23e léger doesn't re-pop the modal). Both reset when the roster changes.
+  const [buggedWarning, setBuggedWarning] = useState<UnitCard | null>(null);
+  const [warnedBugged, setWarnedBugged] = useState<Set<string>>(() => new Set());
   const [loadedSaved, setLoadedSaved] = useState<SavedBuild | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [rotationOpen, setRotationOpen] = useState(false);
@@ -111,6 +127,9 @@ export function Builder({
     setLoadedSaved(null);
     setHovered(null);
     setPeek(null);
+    setPrimedKey(null);
+    setBuggedWarning(null);
+    setWarnedBugged(new Set());
     setTowRollOpen(false);
     setTowGenerateOpen(false);
     // Enable every source corps by default (the combined view pools them all;
@@ -218,6 +237,15 @@ export function Builder({
   // in the build beyond the first 4 rolled, or adding it would open a 5th corps.
   const isOverCorps = (card: UnitCard) => (towBuild ? isCardOverCorpsCeiling(card, towBuild) : false);
 
+  // Pop the bugged-uniform advisory the first time a copy of one of the affected
+  // 23e léger regiments (see domain/buggedUniforms) is added to this build.
+  const maybeWarnBugged = (card: UnitCard) => {
+    const key = buggedUniformKey(card);
+    if (!key || warnedBugged.has(key)) return;
+    setWarnedBugged((s) => new Set(s).add(key));
+    setBuggedWarning(card);
+  };
+
   const tryAdd = (card: UnitCard) => {
     const reason = blockReasons.get(card.unitKey);
     if (reason) {
@@ -225,10 +253,44 @@ export function Builder({
       return;
     }
     setBuild((b) => ({ ...b, instances: [...b.instances, { id: makeInstanceId(), unitKey: card.unitKey }] }));
+    maybeWarnBugged(card);
   };
 
   const removeInstance = (id: string) =>
     setBuild((b) => ({ ...b, instances: b.instances.filter((i) => i.id !== id) }));
+
+  // Touch grid long-press = "deselect from the bar": drop the most recently added
+  // copy of this unit, or clear the staff slot if the card is the current commander.
+  // Repeat long-presses peel off further copies; a no-op if none are selected.
+  const removeOneByKey = (key: string) =>
+    setBuild((b) => {
+      if (b.staffSlotUnitKey === key) return { ...b, staffSlotUnitKey: null };
+      const idx = b.instances.map((i) => i.unitKey).lastIndexOf(key);
+      if (idx < 0) return b;
+      return { ...b, instances: b.instances.filter((_, i) => i !== idx) };
+    });
+
+  // Touch grid tap dispatcher. A first tap on a unit shows its stat card and primes
+  // it; a second tap (and any after) runs its action — add, or set commander for a
+  // staff general. Tapping a different unit re-primes that one instead.
+  const primeOrAct = (card: UnitCard, act: (c: UnitCard) => void) => {
+    if (primedKey === card.unitKey) {
+      act(card);
+    } else {
+      setPrimedKey(card.unitKey);
+      setPeek(card);
+    }
+  };
+
+  // Dismiss the touch peek and its two-tap prime together. The prime must never
+  // outlive the stat card: if it did, the next tap on the same unit would run its
+  // action (add / set commander) instead of re-peeking. Used for every path that
+  // clears the peek without acting (scroll/outside-tap dismiss, opening full
+  // details) so `primedKey` can't desync from `peek`.
+  const dismissPeek = () => {
+    setPeek(null);
+    setPrimedKey(null);
+  };
 
   const toggleStaff = (card: UnitCard) => {
     // The cost ceiling is soft, so a commander can always be set (its cost just
@@ -243,6 +305,7 @@ export function Builder({
   const clearBuild = () => {
     if (build.instances.length === 0 && !build.staffSlotUnitKey) return;
     setBuild(emptyBuild());
+    setPrimedKey(null);
   };
 
   // Remove every selected unit (and the commander, if it belongs to this corps)
@@ -286,6 +349,29 @@ export function Builder({
     setMessage("Reset combat generals to their base units.");
   };
 
+  // Export the build as a stretched-out single-line image (like the desktop unit
+  // bar): copied to the clipboard on desktop, saved/shared to the device on touch.
+  const hasBuild = build.instances.length > 0 || build.staffSlotUnitKey !== null;
+  const exportImage = async () => {
+    if (!hasBuild) return;
+    try {
+      const blob = await renderBuildImage(index, build, {
+        title: roster.armyCorpsName || roster.factionKey,
+        subtitle: `${summary.totalCards} cards · ${summary.totalMen.toLocaleString()} men · ${summary.price.finalCost.toLocaleString()} gold`,
+      });
+      const base = (roster.armyCorpsName || roster.factionKey).replace(/[^\w-]+/g, "_").slice(0, 60) || "build";
+      const result = await deliverImage(blob, `${base}.png`, isCoarsePointer());
+      if (result === "copied") setMessage("Build image copied to clipboard.");
+      else if (result === "saved") setMessage("Build image saved.");
+    } catch {
+      setMessage("Couldn't export the build image.");
+    }
+  };
+
+  // Touch (phones/tablets) uses the two-tap grid model; desktop/Electron stays
+  // byte-identical (tap = add, right-click = details). Pointer type is stable per
+  // session, so a non-reactive read is safe.
+  const coarse = isCoarsePointer();
   const handlers: MedallionHandlers = {
     isSelected,
     inStaffSlot,
@@ -296,11 +382,11 @@ export function Builder({
     qtyOf,
     groupQtyOf: groupQty,
     atCapOf,
-    onAdd: tryAdd,
-    onDetails: setDetail,
+    onAdd: coarse ? (card) => primeOrAct(card, tryAdd) : tryAdd,
+    onDetails: coarse ? (card) => removeOneByKey(card.unitKey) : setDetail,
     onHover: (card, anchor) => setHovered({ card, anchor }),
     onHoverEnd: () => setHovered(null),
-    onPeek: setPeek,
+    isPrimed: (key) => primedKey === key,
   };
 
   // Set of general unitKeys offered in this corps's current local-time rotation
@@ -623,7 +709,7 @@ export function Builder({
             brigadeMeta={combinedView ? EMPTY_BRIGADE_META : brigadeMeta}
             divisionNames={divisionNames}
             handlers={handlers}
-            onStaffToggle={toggleStaff}
+            onStaffToggle={coarse ? (card) => primeOrAct(card, toggleStaff) : toggleStaff}
           />
           {unplaced.length > 0 && (
             <section className="division" aria-label="Other units">
@@ -654,10 +740,17 @@ export function Builder({
         autoGeneralsDisabled={!autoGeneralsAvailable}
         onResetGenerals={resetCombatGeneralsHandler}
         resetGeneralsDisabled={!resetGeneralsAvailable}
+        onExportImage={exportImage}
+        exportDisabled={!hasBuild}
         onDetails={setDetail}
         onHover={(c, a) => setHovered({ card: c, anchor: a })}
         onHoverEnd={() => setHovered(null)}
-        onPeek={setPeek}
+        onPeek={(card) => {
+          // A tray peek is not a grid prime; clear any lingering grid prime so a
+          // later tap on that grid unit re-peeks rather than acting.
+          setPrimedKey(null);
+          setPeek(card);
+        }}
         corpsStat={isTow && towBuild ? { count: towBuild.count, max: LEGACY_TOW_MAX_SOURCE_CORPS, over: towBuild.over } : null}
       />
 
@@ -676,9 +769,9 @@ export function Builder({
           blockReason={blockReasons.get(peek.unitKey) ?? null}
           onFullDetails={() => {
             setDetail(peek);
-            setPeek(null);
+            dismissPeek();
           }}
-          onDismiss={() => setPeek(null)}
+          onDismiss={dismissPeek}
         />
       )}
       {detail && (
@@ -705,6 +798,9 @@ export function Builder({
       {towGenerateOpen && (
         <TowGenerateModal roster={roster} index={index} build={build} onClose={() => setTowGenerateOpen(false)} />
       )}
+      {buggedWarning && (
+        <BuggedUniformModal card={buggedWarning} onClose={() => setBuggedWarning(null)} />
+      )}
       {message && <div className="toast" role="status">{message}</div>}
     </div>
   );
@@ -718,6 +814,7 @@ function UnplacedMedallion({ card, h }: { card: UnitCard; h: MedallionHandlers }
       qty={h.qtyOf(card.unitKey)}
       capCount={h.groupQtyOf(card)}
       selected={h.isSelected(card.unitKey)}
+      primed={h.isPrimed(card.unitKey)}
       dimmed={h.isDimmed(card)}
       blocked={blocked}
       overBudget={h.isOverBudget(card)}
@@ -726,7 +823,6 @@ function UnplacedMedallion({ card, h }: { card: UnitCard; h: MedallionHandlers }
       onContextMenu={() => h.onDetails(card)}
       onHover={h.onHover}
       onHoverEnd={h.onHoverEnd}
-      onPeek={h.onPeek}
     />
   );
 }

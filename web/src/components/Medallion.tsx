@@ -32,6 +32,10 @@ export interface MedallionProps {
   capCount?: number;
   selected?: boolean;
   inStaffSlot?: boolean;
+  /** Touch grid only: this is the "primed" unit — its stat card has been shown by a
+   *  first tap, so the next tap adds it. Draws a highlight ring. Always false on
+   *  desktop (which has no two-tap model). */
+  primed?: boolean;
   dimmed?: boolean;
   blocked?: boolean;
   /** Selecting this unit would push the build past the 10,000 cost ceiling — its
@@ -42,8 +46,9 @@ export interface MedallionProps {
   overCorps?: boolean;
   atCap?: boolean;
   hideName?: boolean;
-  /** Show the speed/movement code (e.g. L4) as a badge in the top-left corner.
-   *  Used in the build tray where the cap badge is hidden. */
+  /** Force the speed/movement code (e.g. L4) badge in the build tray, where the
+   *  cap badge is hidden. The grid shows the speed pill too (under the cap badge),
+   *  driven by `!hideName` rather than this flag. */
   showSpeed?: boolean;
   onClick?: () => void;
   onContextMenu?: () => void;
@@ -66,6 +71,7 @@ export function Medallion({
   capCount,
   selected = false,
   inStaffSlot = false,
+  primed = false,
   dimmed = false,
   blocked = false,
   overBudget = false,
@@ -84,8 +90,10 @@ export function Medallion({
   const coarse = isCoarsePointer();
   // Touch model. On desktop (fine pointer) the hook ignores mouse pointers, so a
   // long-press never fires and right-click/hover behave exactly as before.
-  //   • Grid (peekOn "longpress"): tap = the primary action (add); long-press =
-  //     the simplified stat card. Right-click parity with details is dropped here.
+  //   • Grid: no `onPeek` is passed, so tap = onClick and long-press = onContextMenu.
+  //     The Builder wires those (on coarse pointers) to its two-tap model: first tap
+  //     primes + peeks, second tap adds; long-press removes a copy. Peeking is driven
+  //     from the Builder, not from here.
   //   • Tray (peekOn "tap"): tap = the simplified stat card; long-press keeps the
   //     right-click action (remove/clear).
   const peekActive = coarse && !!onPeek;
@@ -100,8 +108,8 @@ export function Medallion({
   return (
     <div
       className={`medallion${selected ? " selected" : ""}${inStaffSlot ? " staff" : ""}${
-        dimmed ? " dimmed" : ""
-      }${blocked ? " blocked" : ""}${overBudget ? " overbudget" : ""}${overCorps ? " overcorps" : ""}${atCap ? " atcap" : ""}${
+        primed ? " primed" : ""
+      }${dimmed ? " dimmed" : ""}${blocked ? " blocked" : ""}${overBudget ? " overbudget" : ""}${overCorps ? " overcorps" : ""}${atCap ? " atcap" : ""}${
         hideName ? " tray-mini" : ""
       }`}
       role="button"
@@ -130,8 +138,12 @@ export function Medallion({
         if (longPress.wasRecent()) return;
         onContextMenu();
       }}
-      onMouseEnter={(e) => onHover?.(card, e.currentTarget.getBoundingClientRect())}
-      onMouseLeave={() => onHoverEnd?.()}
+      // Desktop hover shows the stat card. On touch a tap synthesizes a
+      // `mouseenter`, which would pop that same card on every select — gate the
+      // hover path off on coarse pointers (touch uses the explicit peek gesture
+      // instead). Desktop mice keep hover-shows-tooltip.
+      onMouseEnter={(e) => !coarse && onHover?.(card, e.currentTarget.getBoundingClientRect())}
+      onMouseLeave={() => !coarse && onHoverEnd?.()}
       // On touch, a tap focuses the medallion — firing this would pop the hover
       // card on every select. Gate the focus-tooltip path off on coarse pointers;
       // desktop keyboard users (fine pointer) keep focus-shows-tooltip.
@@ -153,16 +165,22 @@ export function Medallion({
       {/* Men count and the cap/qty badge sit above the frame (own stacking
           context) so the oval's overflow clip never hides them. */}
       {card.finalMen != null && <span className="men">{card.finalMen}</span>}
-      {showSpeed && card.speedCode && (
+      {/* Speed/movement pill, top-left. Shown in the build tray (showSpeed) and in
+          the grid, where it stacks directly under the cap badge (see the
+          `:not(.tray-mini) .speed` rule). Hidden in the modal head (hideName). */}
+      {card.speedCode && (showSpeed || !hideName) && (
         <span className="speed" title={`Speed ${card.speedCode}`}>{card.speedCode}</span>
       )}
-      {card.groupCap > 0 && !hideName ? (
+      {/* The build tray (showSpeed) mirrors the desktop tray: speed badge only,
+          no cap/qty/checkmark clutter. The cap badge stays in the grid, where
+          showSpeed is off — it sits directly above the grid's speed pill. */}
+      {card.groupCap > 0 && !hideName && !showSpeed ? (
         <span className={`qty cap${atCap ? " full" : ""}`} title={`${capShown} of ${card.groupCap} taken`}>
           {capShown}/{card.groupCap}
         </span>
       ) : qty > 1 ? (
         <span className="qty">{qty}</span>
-      ) : selected && qty <= 1 && !hideName ? (
+      ) : selected && qty <= 1 && !hideName && !showSpeed ? (
         // No checkmark in the tray — being in the tray already means selected.
         <span className="checkmark" aria-hidden>✓</span>
       ) : null}

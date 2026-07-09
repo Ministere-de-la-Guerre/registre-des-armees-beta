@@ -6,6 +6,7 @@ __pycache__/
 # Local assistant/workspace scratch
 .claude/
 .agents/
+/PRIVATE.md
 
 # Curated release-upload staging (large installers, built locally, uploaded by hand)
 /_github_assets/

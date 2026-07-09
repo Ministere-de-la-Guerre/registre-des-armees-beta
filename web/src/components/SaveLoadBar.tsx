@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { FactionRoster } from "../domain/types";
+import { isTabletTouch, useCoarsePointer } from "./useCoarsePointer";
 import {
   BuildRepository,
   type CurrentBuild,
@@ -32,6 +34,38 @@ export function SaveLoadBar({
   const [saves, setSaves] = useState<SavedBuild[]>([]);
   const [open, setOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const coarse = useCoarsePointer();
+  // On touch/tablet the Load menu and the name prompt are fixed overlays that live
+  // inside the header's momentum-scroll container. iOS clips position:fixed
+  // descendants of a `-webkit-overflow-scrolling: touch` scroller, which hid them
+  // entirely — so portal them to <body> to escape that clip. Desktop keeps them
+  // inline (the dropdown is absolute-anchored to its button; byte-identical).
+  const overlaysPortal = coarse || isTabletTouch();
+  const renderOverlay = (node: ReactNode) => (overlaysPortal ? createPortal(node, document.body) : node);
+
+  // Dismiss the Load menu on a tap/click outside it or Escape. On touch the menu
+  // is a bottom sheet whose trigger button can be scrolled out of the header, so
+  // this is the reliable way to close it (and it tidies the desktop dropdown too).
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      // The menu may be portaled out of rootRef, so treat a tap inside either the
+      // trigger row or the menu itself as "inside".
+      const target = e.target as Node;
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
 
   // In-app name prompt. Electron does not support window.prompt(), so naming a
   // build (Save As / Rename) must go through this modal instead.
@@ -122,8 +156,13 @@ export function SaveLoadBar({
     const a = document.createElement("a");
     a.href = url;
     a.download = `${saved.name.replace(/[^\w-]+/g, "_")}.json`;
+    // Append to the DOM and defer the revoke: clicking a detached anchor and
+    // revoking synchronously is a no-op on some browsers (matches downloadBlob in
+    // exportBuildImage.ts and OfflinePanel.downloadJson).
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
   };
 
   const doImport = (file: File) => {
@@ -134,15 +173,28 @@ export function SaveLoadBar({
         onMessage("Import failed: not a valid build file.");
         return;
       }
+      // Import upserts by id: re-importing an older export of a build you have
+      // since edited and re-saved would silently clobber the newer stored save.
+      // Confirm before overwriting an existing save (Save As confirms too).
+      const existing = repo.get(saved.id);
+      if (existing && !window.confirm(`This will overwrite the saved build “${existing.name}” with the imported file. Continue?`)) {
+        return;
+      }
+      // Importing into the open corps replaces the on-screen build, discarding
+      // unsaved edits — confirm just like Load does.
+      const loadsIntoCurrent = saved.factionKey === roster.factionKey;
+      if (loadsIntoCurrent && dirty && !window.confirm("Discard unsaved changes and load the imported build?")) {
+        return;
+      }
       persistAndReport(repo.save(saved), `Imported “${saved.name}”.`);
-      if (saved.factionKey === roster.factionKey) onLoaded(resolveSavedBuild(saved, roster), saved);
+      if (loadsIntoCurrent) onLoaded(resolveSavedBuild(saved, roster), saved);
       else onMessage(`Imported “${saved.name}” for another corps. Open it to load.`);
     };
     reader.readAsText(file);
   };
 
   return (
-    <div style={{ display: "flex", gap: 6, alignItems: "center", position: "relative" }}>
+    <div ref={rootRef} style={{ display: "flex", gap: 6, alignItems: "center", position: "relative" }}>
       <button className={`btn small ${dirty ? "primary" : ""}`} onClick={doSave} title={loaded ? "Save changes" : "Save"}>
         {dirty ? "Save*" : "Save"}
       </button>
@@ -169,8 +221,9 @@ export function SaveLoadBar({
           e.target.value = "";
         }}
       />
-      {open && (
-        <div className="saves-menu">
+      {open &&
+        renderOverlay(
+        <div className="saves-menu" ref={menuRef}>
           {!repo.persistent && (
             <div className="saves-warning">Storage unavailable — saves will not persist this session.</div>
           )}
@@ -194,6 +247,12 @@ export function SaveLoadBar({
                       initial: s.name,
                       submitLabel: "Rename",
                       onSubmit: (n) => {
+                        // Guard against silently creating two saves that share a
+                        // display name in this corps (Save As already checks this).
+                        const clash = repo.findByName(n, s.factionKey);
+                        if (clash && clash.id !== s.id && !window.confirm(`Another build named “${n}” already exists for this corps. Keep both with the same name?`)) {
+                          return;
+                        }
                         persistAndReport(repo.rename(s.id, n), `Renamed to “${n}”.`);
                         if (loaded?.id === s.id) onSaved({ ...s, name: n });
                       },
@@ -222,9 +281,10 @@ export function SaveLoadBar({
               </div>
             ))
           )}
-        </div>
-      )}
-      {namePrompt && (
+        </div>,
+        )}
+      {namePrompt &&
+        renderOverlay(
         <div className="modal-backdrop" onMouseDown={closeNamePrompt}>
           <div
             className="modal"
@@ -265,8 +325,8 @@ export function SaveLoadBar({
               </div>
             </div>
           </div>
-        </div>
-      )}
+        </div>,
+        )}
     </div>
   );
 }

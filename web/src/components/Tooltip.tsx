@@ -56,6 +56,12 @@ export function Tooltip({
     const onPointerDown = (e: PointerEvent) => {
       if (!armed) return;
       if (ref.current && e.target instanceof Node && ref.current.contains(e.target)) return;
+      // A tap on a grid/tray medallion is owned by the two-tap model (act on the
+      // primed unit, or re-peek a different one) — dismissing here would clear the
+      // prime out from under that tap's click, so the "add" never fires and the
+      // card just flickers. Let the medallion handle its own taps; only truly
+      // outside taps (empty space, buttons, chrome) dismiss the peek.
+      if (e.target instanceof Element && e.target.closest(".medallion")) return;
       onDismiss();
     };
     const onScroll = () => armed && onDismiss();

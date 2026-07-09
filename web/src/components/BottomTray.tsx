@@ -18,6 +18,9 @@ interface TrayProps {
   autoGeneralsDisabled: boolean;
   onResetGenerals: () => void;
   resetGeneralsDisabled: boolean;
+  /** Export the build as a single-line image (clipboard on desktop, save on touch). */
+  onExportImage: () => void;
+  exportDisabled: boolean;
   onDetails: (card: UnitCard) => void;
   onHover: (card: UnitCard, anchor: DOMRect) => void;
   onHoverEnd: () => void;
@@ -50,6 +53,8 @@ function DesktopTray({
   autoGeneralsDisabled,
   onResetGenerals,
   resetGeneralsDisabled,
+  onExportImage,
+  exportDisabled,
   isOverCorps,
   onDetails,
   onHover,
@@ -127,6 +132,14 @@ function DesktopTray({
           <span>Reset</span> <span>generals</span>
         </button>
         <button
+          className="btn small export-image"
+          disabled={exportDisabled}
+          onClick={onExportImage}
+          title="Copy the whole build as a single-line image to your clipboard"
+        >
+          <span>Copy</span> <span>image</span>
+        </button>
+        <button
           className="btn small clear-build"
           disabled={!hasBuild}
           onClick={onClearBuild}
@@ -153,6 +166,8 @@ function TouchTray({
   autoGeneralsDisabled,
   onResetGenerals,
   resetGeneralsDisabled,
+  onExportImage,
+  exportDisabled,
   isOverCorps,
   onDetails,
   onPeek,
@@ -239,6 +254,9 @@ function TouchTray({
               </button>
               <button className="btn reset-generals" disabled={resetGeneralsDisabled} onClick={onResetGenerals}>
                 Reset generals
+              </button>
+              <button className="btn export-image" disabled={exportDisabled} onClick={onExportImage}>
+                Save image
               </button>
               <button className="btn clear-build" disabled={!hasBuild} onClick={onClearBuild}>
                 Clear build
