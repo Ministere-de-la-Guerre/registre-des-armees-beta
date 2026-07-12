@@ -12,6 +12,11 @@ interface TrayProps {
   /** Flags a selected copy whose source corps is beyond the 4-corps roll (TOW). */
   isOverCorps: (card: UnitCard) => boolean;
   onRemoveInstance: (instanceId: string) => void;
+  /** True when this unit has a combat general in the roster — i.e. the selected copy
+   *  can be swapped for (or, if it already is one, out of) a general leading it. */
+  canSwapGeneral: (card: UnitCard) => boolean;
+  /** Open the combat-general chooser for one selected copy. */
+  onSwapGeneral: (instanceId: string) => void;
   onClearStaff: () => void;
   onClearBuild: () => void;
   onAutoGenerals: () => void;
@@ -47,6 +52,8 @@ function DesktopTray({
   build,
   summary,
   onRemoveInstance,
+  canSwapGeneral,
+  onSwapGeneral,
   onClearStaff,
   onClearBuild,
   onAutoGenerals,
@@ -107,6 +114,8 @@ function DesktopTray({
             onContextMenu={() => onRemoveInstance(inst.id)}
             onHover={onHover}
             onHoverEnd={onHoverEnd}
+            onSwapGeneral={canSwapGeneral(card) ? () => onSwapGeneral(inst.id) : undefined}
+            ledByGeneral={card.isGeneral && card.generalKind === "combat"}
           />
         ))}
         {Array.from({ length: emptyCount }).map((_, i) => (
@@ -160,6 +169,8 @@ function TouchTray({
   build,
   summary,
   onRemoveInstance,
+  canSwapGeneral,
+  onSwapGeneral,
   onClearStaff,
   onClearBuild,
   onAutoGenerals,
@@ -244,6 +255,8 @@ function TouchTray({
                   onContextMenu={() => onRemoveInstance(inst.id)}
                   onPeek={onPeek}
                   peekOn="tap"
+                  onSwapGeneral={canSwapGeneral(card) ? () => onSwapGeneral(inst.id) : undefined}
+                  ledByGeneral={card.isGeneral && card.generalKind === "combat"}
                 />
               ))}
               {!hasBuild && <p className="tray-sheet-empty">No units yet — tap a unit in the grid to add it.</p>}
