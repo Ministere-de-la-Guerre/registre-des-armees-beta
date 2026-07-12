@@ -15,6 +15,7 @@ import {
   effectiveCap,
   emptyBuild,
   evaluateAdd,
+  generalSwapFor,
   groupQtyOf,
   hasCombatGeneralInstances,
   indexRoster,
@@ -23,6 +24,8 @@ import {
   resetCombatGenerals,
   staffSetWouldExceedBudget,
   summarize,
+  swapInstanceUnit,
+  unitsWithCombatGenerals,
 } from "../state/build";
 import { type FilterState, defaultFilters, isFilterActive, isHiddenByGeneralSwitch, matchesCard } from "../state/filters";
 import { combinedTowLayout, orderBrigadeCards } from "../state/ordering";
@@ -38,6 +41,7 @@ import { compareTowSourceCorpsIds, isTowFactionKey, towBrigadeLabel } from "../d
 import { towCorpsFullNameMap } from "../domain/towCorpsNames";
 import { buggedUniformKey } from "../domain/buggedUniforms";
 import { BuggedUniformModal } from "./BuggedUniformModal";
+import { GeneralSwapModal } from "./GeneralSwapModal";
 import { RotationModal } from "./RotationModal";
 import { TowRollModal } from "./TowRollModal";
 import { TowGenerateModal } from "./TowGenerateModal";
@@ -98,6 +102,8 @@ export function Builder({
   // 23e léger doesn't re-pop the modal). Both reset when the roster changes.
   const [buggedWarning, setBuggedWarning] = useState<UnitCard | null>(null);
   const [warnedBugged, setWarnedBugged] = useState<Set<string>>(() => new Set());
+  // The selected copy whose combat-general chooser is open (★ badge in the tray).
+  const [swapInstanceId, setSwapInstanceId] = useState<string | null>(null);
   const [loadedSaved, setLoadedSaved] = useState<SavedBuild | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [rotationOpen, setRotationOpen] = useState(false);
@@ -130,6 +136,7 @@ export function Builder({
     setPrimedKey(null);
     setBuggedWarning(null);
     setWarnedBugged(new Set());
+    setSwapInstanceId(null);
     setTowRollOpen(false);
     setTowGenerateOpen(false);
     // Enable every source corps by default (the combined view pools them all;
@@ -347,6 +354,33 @@ export function Builder({
     if (!resetGeneralsAvailable) return;
     setBuild((b) => resetCombatGenerals(index, b));
     setMessage("Reset combat generals to their base units.");
+  };
+
+  // Per-unit combat general: take a unit now, give it a general later. The ★ badge on
+  // a selected copy in the tray opens the chooser for that copy; picking a general
+  // swaps it into the same slot (and picking the plain unit takes it back out).
+  const unitsWithGenerals = useMemo(() => unitsWithCombatGenerals(index), [index]);
+  const canSwapGeneral = useCallback(
+    (card: UnitCard) => unitsWithGenerals.has(card.capGroupKey),
+    [unitsWithGenerals],
+  );
+  const generalSwap = useMemo(
+    () => (swapInstanceId ? generalSwapFor(index, build, swapInstanceId, combatCap) : null),
+    [swapInstanceId, index, build, combatCap],
+  );
+  const applyGeneralSwap = (unitKey: string) => {
+    if (!swapInstanceId) return;
+    const card = index.byKey.get(unitKey);
+    setBuild((b) => swapInstanceUnit(b, swapInstanceId, unitKey));
+    setSwapInstanceId(null);
+    if (!card) return;
+    // The general variant carries the same (bugged) uniform as the unit it leads.
+    maybeWarnBugged(card);
+    setMessage(
+      card.isGeneral && card.generalKind === "combat"
+        ? `${card.name} now leads this unit.`
+        : `${card.name} is back to a plain unit — its combat general was removed.`,
+    );
   };
 
   // Export the build as a stretched-out single-line image (like the desktop unit
@@ -734,6 +768,14 @@ export function Builder({
         summary={summary}
         isOverCorps={isOverCorps}
         onRemoveInstance={removeInstance}
+        canSwapGeneral={canSwapGeneral}
+        onSwapGeneral={(id) => {
+          // The badge swallows its own pointer events, so the peek card's
+          // outside-tap dismissal never sees the press — close it here, or it would
+          // hang over the chooser on touch.
+          dismissPeek();
+          setSwapInstanceId(id);
+        }}
         onClearStaff={clearStaff}
         onClearBuild={clearBuild}
         onAutoGenerals={autoCombatGenerals}
@@ -780,6 +822,15 @@ export function Builder({
           inStaffSlot={inStaffSlot(detail.unitKey)}
           onSetCommander={detail.isGeneral ? () => toggleStaff(detail) : undefined}
           onClose={() => setDetail(null)}
+        />
+      )}
+      {generalSwap && (
+        <GeneralSwapModal
+          swap={generalSwap}
+          combatCap={combatCap}
+          combatGensUsed={combatGensUsed}
+          onPick={applyGeneralSwap}
+          onClose={() => setSwapInstanceId(null)}
         />
       )}
       {rotationOpen && (

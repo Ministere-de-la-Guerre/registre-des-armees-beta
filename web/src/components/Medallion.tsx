@@ -62,6 +62,13 @@ export interface MedallionProps {
    *  (tap adds); tray medallions peek on tap (long-press removes). Default
    *  "longpress" matches the grid, the common case. */
   peekOn?: "tap" | "longpress";
+  /** Tray only: open the combat-general swap for this selected copy. Renders a small
+   *  ★ badge on the portrait; the badge owns its own taps, so the medallion's own
+   *  gestures (details/peek, remove) are untouched. */
+  onSwapGeneral?: () => void;
+  /** The copy this medallion shows is currently led by a combat general (lights the
+   *  ★ badge). */
+  ledByGeneral?: boolean;
 }
 
 /** Oval unit portrait used in the grid, build tray, and details modal. */
@@ -85,6 +92,8 @@ export function Medallion({
   onHoverEnd,
   onPeek,
   peekOn = "longpress",
+  onSwapGeneral,
+  ledByGeneral = false,
 }: MedallionProps) {
   const [failed, setFailed] = useState(false);
   const coarse = isCoarsePointer();
@@ -150,6 +159,9 @@ export function Medallion({
       onFocus={(e) => !coarse && onHover?.(card, e.currentTarget.getBoundingClientRect())}
       onBlur={() => !coarse && onHoverEnd?.()}
       onKeyDown={(e) => {
+        // Only keys aimed at the medallion itself — never ones typed on a child
+        // control (the ★ swap badge), which owns its own Enter/Space.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onClick?.();
@@ -201,6 +213,42 @@ export function Medallion({
           </span>
         ) : null}
         {badge && <img className="guerrilla" src={badge} alt="Guerrilla deployment" loading="lazy" />}
+        {/* Combat-general swap badge (build tray only). It rides on the portrait — like
+            the guerrilla badge, but bottom-left — so it stays on the oval whether or not
+            the medallion also draws a name under it. It swallows its own pointer events,
+            so pressing it never runs the medallion's own click/long-press action. */}
+        {onSwapGeneral && (
+          <button
+            type="button"
+            className={`gen-swap${ledByGeneral ? " on" : ""}`}
+            aria-label={
+              ledByGeneral
+                ? `Change or remove the combat general leading ${card.name}`
+                : `Give ${card.name} a combat general`
+            }
+            title={
+              ledByGeneral
+                ? "Change or remove this unit's combat general"
+                : "Swap this unit for a combat general leading it"
+            }
+            // Pointer events must not reach the medallion — they would arm its long-press
+            // (remove a copy). Keys must NOT be stopped: React dispatches from the root, so
+            // stopping a key here would also stop it reaching the document listeners that
+            // close modals on Escape. The medallion's onKeyDown ignores keys from children.
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSwapGeneral();
+            }}
+          >
+            ★
+          </button>
+        )}
         <span className="coststrip">
           <span className={`cost${overBudget ? " over" : ""}`} title={overBudget ? "Selecting this would exceed the 10,000 cost limit" : undefined}>
             {card.cost.toLocaleString()}

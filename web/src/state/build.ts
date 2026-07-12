@@ -358,6 +358,110 @@ export function autoPickCombatGenerals(
   return { replacements: chosen };
 }
 
+/** Replace the unit held by one selected copy, keeping its slot (and id) in place.
+ *  Used by the per-unit combat-general swap: a plain copy becomes the combat-general
+ *  variant of the same unit, or a general reverts to the plain unit it leads. */
+export function swapInstanceUnit(build: BuildState, instanceId: string, unitKey: string): BuildState {
+  return {
+    ...build,
+    instances: build.instances.map((i) => (i.id === instanceId ? { id: i.id, unitKey } : i)),
+  };
+}
+
+/** The cap groups (unit keys) the roster offers at least one combat general for.
+ *  A selected copy of such a unit can be swapped for the general that leads it. */
+export function unitsWithCombatGenerals(index: RosterIndex): Set<string> {
+  const groups = new Set<string>();
+  for (const c of index.roster.cards) {
+    if (c.isGeneral && c.generalKind === "combat") groups.add(c.capGroupKey);
+  }
+  return groups;
+}
+
+export interface SwapOption {
+  card: UnitCard;
+  /** This option is the unit the copy currently holds. */
+  current: boolean;
+  /** Cost change against the copy's current card. */
+  costDelta: number;
+  /** The build's final cost once swapped. */
+  finalCost: number;
+  /** Swapping would push the build past the 10,000 ceiling (soft — never blocks). */
+  overBudget: boolean;
+  /** Why the swap is not allowed, or null when it is. */
+  blockedReason: string | null;
+}
+
+export interface GeneralSwap {
+  instanceId: string;
+  /** The card the copy currently holds (plain unit or one of its combat generals). */
+  current: UnitCard;
+  /** The plain unit option (revert). Null when the roster has no base card for it. */
+  plain: SwapOption | null;
+  /** Every combat general that leads this unit, cheapest first. */
+  generals: SwapOption[];
+}
+
+/** Score one candidate card for a copy's slot. A swap inside a cap group never
+ *  changes the card count, the shared cap, or the artillery/cavalry class caps (the
+ *  general reports its led unit's class), so only the two general rules can block it:
+ *  a unit may be led by one combat general, and the corps has a combat-general cap. */
+function swapOption(
+  index: RosterIndex,
+  build: BuildState,
+  instanceId: string,
+  from: UnitCard,
+  to: UnitCard,
+  combatCap: number,
+): SwapOption {
+  const next = swapInstanceUnit(build, instanceId, to.unitKey);
+  const { cards, staffSlotIndex } = expandBuild(index, next);
+  const isCombat = (c: UnitCard) => c.isGeneral && c.generalKind === "combat";
+  const inGroup = cards.filter((c) => isCombat(c) && c.capGroupKey === to.capGroupKey).length;
+  const againstCap = cards.filter((c, i) => i !== staffSlotIndex && isCombat(c)).length;
+  let blockedReason: string | null = null;
+  if (inGroup > 1) blockedReason = "Another copy of this unit already has a combat general.";
+  else if (againstCap > combatCap) blockedReason = `Combat-general limit (${combatCap}) reached.`;
+  const finalCost = priceBuild(index, next).finalCost;
+  return {
+    card: to,
+    current: to.unitKey === from.unitKey,
+    costDelta: to.cost - from.cost,
+    finalCost,
+    overBudget: finalCost > MAX_BUILD_COST,
+    blockedReason,
+  };
+}
+
+/** The combat generals a selected copy can be swapped to (plus the plain unit it can
+ *  revert to), each priced and rule-checked against the current build. Null when the
+ *  copy isn't in the build or its unit has no combat general in the roster — i.e.
+ *  exactly when the tray should offer no swap control. */
+export function generalSwapFor(
+  index: RosterIndex,
+  build: BuildState,
+  instanceId: string,
+  combatCap: number,
+): GeneralSwap | null {
+  const inst = build.instances.find((i) => i.id === instanceId);
+  const current = inst ? index.byKey.get(inst.unitKey) : undefined;
+  if (!current) return null;
+
+  const generals = index.roster.cards
+    .filter((c) => c.isGeneral && c.generalKind === "combat" && c.capGroupKey === current.capGroupKey)
+    .sort((a, b) => a.cost - b.cost || a.rosterIndex - b.rosterIndex)
+    .map((g) => swapOption(index, build, instanceId, current, g, combatCap));
+  if (generals.length === 0) return null;
+
+  const base = index.byKey.get(current.capGroupKey);
+  return {
+    instanceId,
+    current,
+    plain: base ? swapOption(index, build, instanceId, current, base, combatCap) : null,
+    generals,
+  };
+}
+
 /** True when the build has at least one combat general occupying a unit slot (an
  *  instance, not the commander). Drives the "reset generals" control. */
 export function hasCombatGeneralInstances(index: RosterIndex, build: BuildState): boolean {

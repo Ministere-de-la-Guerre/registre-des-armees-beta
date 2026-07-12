@@ -6,10 +6,13 @@ import {
   addWouldExceedBudget,
   autoPickCombatGenerals,
   evaluateAdd,
+  generalSwapFor,
   hasCombatGeneralInstances,
   indexRoster,
   priceBuild,
   resetCombatGenerals,
+  swapInstanceUnit,
+  unitsWithCombatGenerals,
 } from "./build";
 
 const b = (instances: string[], staff: string | null = null): BuildState => ({
@@ -250,6 +253,142 @@ describe("resetCombatGenerals", () => {
     const i = idx();
     expect(hasCombatGeneralInstances(i, b(["a", "bb"]))).toBe(false);
     expect(hasCombatGeneralInstances(i, b(["a", "bb_com"]))).toBe(true);
+  });
+});
+
+describe("generalSwapFor", () => {
+  // A selected copy can be swapped for a combat general of the same unit at any time
+  // (and back). "a" has two generals (cheaper a_com1, dearer a_com2), "bb" has one,
+  // "c" has none, so it offers no swap at all.
+  const FK = "ntw3_zz_test_001";
+  const base = (unitKey: string, cost = 500) =>
+    makeUnit({ unitKey, factionKey: FK, cost, cap: 2, groupCap: 2, capGroupKey: unitKey, baseUnitKey: unitKey });
+  const general = (unitKey: string, group: string, cost: number, rosterIndex = 0) =>
+    makeUnit({
+      unitKey, factionKey: FK, cost, cap: 2, groupCap: 2, capGroupKey: group, baseUnitKey: group, rosterIndex,
+      isGeneral: true, isCommanderVariant: true, generalKind: "combat", unitClass: "general",
+    });
+  const idx = () =>
+    indexRoster(
+      makeRoster(
+        [
+          base("a"), base("bb"), base("c"),
+          general("a_com2", "a", 900, 2), general("a_com1", "a", 400, 1), general("bb_com", "bb", 600),
+        ],
+        FK,
+      ),
+    );
+
+  it("offers every combat general of the selected unit, cheapest first, plus the plain unit", () => {
+    const swap = generalSwapFor(idx(), b(["a"]), "i0", 2)!;
+    expect(swap.current.unitKey).toBe("a");
+    expect(swap.plain!.card.unitKey).toBe("a");
+    expect(swap.plain!.current).toBe(true); // the copy holds the plain unit right now
+    expect(swap.generals.map((o) => o.card.unitKey)).toEqual(["a_com1", "a_com2"]);
+    expect(swap.generals.map((o) => o.costDelta)).toEqual([-100, 400]);
+    expect(swap.generals.every((o) => o.blockedReason === null)).toBe(true);
+  });
+
+  it("offers nothing for a unit with no combat general, or for an unknown copy", () => {
+    expect(generalSwapFor(idx(), b(["c"]), "i0", 2)).toBeNull();
+    expect(generalSwapFor(idx(), b(["a"]), "nope", 2)).toBeNull();
+  });
+
+  it("lets a copy already led by a general switch general or revert to the plain unit", () => {
+    const swap = generalSwapFor(idx(), b(["a_com1"]), "i0", 2)!;
+    expect(swap.current.unitKey).toBe("a_com1");
+    expect(swap.plain!.current).toBe(false);
+    expect(swap.plain!.blockedReason).toBeNull(); // reverting is always allowed
+    expect(swap.plain!.costDelta).toBe(100); // back to the 500 unit from the 400 general
+    expect(swap.generals.find((o) => o.card.unitKey === "a_com1")!.current).toBe(true);
+    // Switching to the other general of the same unit stays within the cap: this copy's
+    // general is replaced, not added to.
+    expect(swap.generals.find((o) => o.card.unitKey === "a_com2")!.blockedReason).toBeNull();
+  });
+
+  it("blocks a general once the corps' combat-general cap is spent elsewhere", () => {
+    // Cap 1, already spent by bb_com; "a" cannot take one, but may still be swapped
+    // to itself-as-plain (a no-op) — and bb_com's own copy can still swap freely.
+    const swap = generalSwapFor(idx(), b(["a", "bb_com"]), "i0", 1)!;
+    expect(swap.generals.map((o) => o.blockedReason)).toEqual([
+      "Combat-general limit (1) reached.",
+      "Combat-general limit (1) reached.",
+    ]);
+    const other = generalSwapFor(idx(), b(["a", "bb_com"]), "i1", 1)!;
+    expect(other.plain!.blockedReason).toBeNull();
+  });
+
+  it("counts a combat general in the staff slot against the cap, not against the unit's copies", () => {
+    // The commander is a combat general of "a": the corps cap (1) is untouched by it
+    // (it sits in the staff slot), but "a" is already led, so a second copy of "a"
+    // cannot take a general of its own.
+    const swap = generalSwapFor(idx(), b(["a"], "a_com1"), "i0", 1)!;
+    expect(swap.generals.find((o) => o.card.unitKey === "a_com1")!.blockedReason).toMatch(/already has a combat general/i);
+    expect(swap.generals.find((o) => o.card.unitKey === "a_com2")!.blockedReason).toMatch(/already has a combat general/i);
+  });
+
+  it("blocks a second general for a unit whose other selected copy already has one", () => {
+    const swap = generalSwapFor(idx(), b(["a", "a_com1"]), "i0", 4)!;
+    expect(swap.generals.map((o) => o.blockedReason)).toEqual([
+      "Another copy of this unit already has a combat general.",
+      "Another copy of this unit already has a combat general.",
+    ]);
+  });
+
+  it("prices each option against the build and flags one that breaks the cost ceiling", () => {
+    const rich = makeUnit({
+      unitKey: "big", factionKey: FK, cost: 9800, cap: 1, groupCap: 1, capGroupKey: "big", baseUnitKey: "big",
+    });
+    const i = indexRoster(makeRoster([...idx().roster.cards, rich], FK));
+    const swap = generalSwapFor(i, b(["a", "big"]), "i0", 2)!;
+    const cheap = swap.generals.find((o) => o.card.unitKey === "a_com1")!;
+    const dear = swap.generals.find((o) => o.card.unitKey === "a_com2")!;
+    expect(cheap.finalCost).toBe(10200); // 9,800 + 400
+    expect(cheap.overBudget).toBe(true); // still over, but far less so
+    expect(dear.finalCost).toBe(10700); // 9,800 + 900
+    expect(dear.overBudget).toBe(true);
+    expect(cheap.blockedReason).toBeNull(); // the ceiling is soft — it warns, never blocks
+  });
+});
+
+describe("swapInstanceUnit", () => {
+  it("replaces only the named copy, keeping its id and its place in the line", () => {
+    const build = b(["a", "bb", "a"]);
+    expect(swapInstanceUnit(build, "i1", "bb_com").instances).toEqual([
+      { id: "i0", unitKey: "a" },
+      { id: "i1", unitKey: "bb_com" },
+      { id: "i2", unitKey: "a" },
+    ]);
+  });
+
+  it("leaves the build untouched when the copy is gone", () => {
+    const build = b(["a"]);
+    expect(swapInstanceUnit(build, "nope", "a_com1").instances).toEqual(build.instances);
+  });
+});
+
+describe("unitsWithCombatGenerals", () => {
+  it("lists the units the roster has a combat general for", () => {
+    const FK = "ntw3_zz_test_001";
+    const idx = indexRoster(
+      makeRoster(
+        [
+          makeUnit({ unitKey: "a", factionKey: FK, capGroupKey: "a", baseUnitKey: "a" }),
+          makeUnit({ unitKey: "c", factionKey: FK, capGroupKey: "c", baseUnitKey: "c" }),
+          makeUnit({
+            unitKey: "a_com", factionKey: FK, capGroupKey: "a", baseUnitKey: "a",
+            isGeneral: true, generalKind: "combat", unitClass: "general",
+          }),
+          // A staff general is not a combat general: it never leads a unit.
+          makeUnit({
+            unitKey: "staff", factionKey: FK, capGroupKey: "staff", baseUnitKey: "staff",
+            isGeneral: true, generalKind: "staff", unitClass: "general",
+          }),
+        ],
+        FK,
+      ),
+    );
+    expect([...unitsWithCombatGenerals(idx)]).toEqual(["a"]);
   });
 });
 
