@@ -746,6 +746,11 @@ input::placeholder { color: #6f7888; }
     top: auto; z-index: 90; pointer-events: auto;
     width: min(340px, 92vw); max-width: min(340px, 92vw);
   }
+  /* Peeking a unit in the lower half of the screen flips the card to the top half so
+     it never sits on the unit the player is about to tap a second time to select. */
+  .tooltip.peek.peek-top {
+    top: calc(12px + env(safe-area-inset-top, 0px)); bottom: auto;
+  }
   /* Drag handle: slide the card off a unit hiding behind it (bottom rows) so the
      two-tap select can reach the unit underneath. touch-action:none keeps the drag
      from scrolling the grid (which would dismiss the peek). */

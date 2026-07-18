@@ -32,6 +32,13 @@ export function Tooltip({
   const peek = variant === "peek";
   const [pos, setPos] = useState<{ left: number; top: number }>({ left: anchor.left, top: anchor.bottom + 8 });
 
+  // Peek placement: the card is normally bottom-anchored, but a unit in the lower
+  // half of the screen would sit behind it — and the two-tap model needs a *second*
+  // tap on that same unit to select it. When the peeked unit is in the lower half,
+  // spawn the card in the upper half instead so the unit stays reachable for an
+  // immediate second tap without dragging the card out of the way.
+  const atTop = peek && anchor.top + anchor.height / 2 > window.innerHeight / 2;
+
   // Peek drag: the card is bottom-anchored, so a unit in the bottom rows sits
   // behind it — and the two-tap model needs a *second* tap on that same unit to
   // select it. The drag handle lets the player slide the card off the unit (as an
@@ -146,7 +153,7 @@ export function Tooltip({
   return (
     <div
       ref={ref}
-      className={`tooltip${peek ? " peek" : ""}`}
+      className={`tooltip${peek ? " peek" : ""}${atTop ? " peek-top" : ""}`}
       style={
         peek
           ? { transform: `translate(calc(-50% + ${drag.dx}px), ${drag.dy}px)` }
