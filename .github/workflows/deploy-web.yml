@@ -4,6 +4,17 @@
 # installers stay manual, while every push to main ships the latest web build.
 # The SW "update available" toast makes continuous web rollout safe.
 #
+# Release naming — web builds are date-labelled, NOT semver:
+#   Web YYYY.MM.DD (beta channel): <summary>      e.g. Web 2026.08.07
+#   second drop the same day -> Web 2026.08.07.2, then .3, ...
+# The web app is continuously deployed and never pinned, so the label only has
+# to answer "which build is this tester on" — a date does that without a lookup
+# table, and "beta.N" was doing three jobs at once (semver identity, channel,
+# release counter). web/package.json's semver is a DESKTOP concern only: it
+# feeds electron-builder artifact names and electron-updater, which compares
+# semver to detect updates. Do not put a date in it, and do not bump it for a
+# web-only release.
+#
 # One-time setup: repo Settings → Pages → Build and deployment → Source =
 # "GitHub Actions". The site then serves at
 # https://<owner>.github.io/registre-des-armees/ (base: "./" handles the sub-path).
