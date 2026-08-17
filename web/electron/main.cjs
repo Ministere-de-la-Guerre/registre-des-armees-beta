@@ -186,9 +186,14 @@ if (!app.requestSingleInstanceLock()) {
     protocol.handle("app", async (request) => {
       let rel = decodeURIComponent(new URL(request.url).pathname);
       if (rel === "/" || rel === "") rel = "/index.html";
-      // Resolve inside DIST and refuse to escape it (path-traversal guard).
+      // Resolve inside DIST and refuse to escape it. Use path.relative containment
+      // (separator-aware) rather than a bare startsWith(DIST): the latter would let
+      // a future sibling dir named dist* (e.g. dist-legacy) through, and it doesn't
+      // guard the drive-root / parent-escape cases. decodeURIComponent above has
+      // already turned any %2e%2e into ".." before normalize collapses it here.
       const filePath = path.normalize(path.join(DIST, rel));
-      if (!filePath.startsWith(DIST)) {
+      const relToDist = path.relative(DIST, filePath);
+      if (relToDist === ".." || relToDist.startsWith(".." + path.sep) || path.isAbsolute(relToDist)) {
         return new Response("Forbidden", { status: 403 });
       }
       try {

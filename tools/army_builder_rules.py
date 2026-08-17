@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -35,9 +35,27 @@ SUPPORT_PLACEMENT_SOURCES = frozenset(
     }
 )
 
+# Corps-specific exception: a handful of corps grant a normal *brigade* discount to
+# the non-artillery (sapper / skirmisher) brigades of their final artillery-support
+# division, even though that division earns no discount as a whole. The artillery
+# reserve brigades in that division still earn nothing. Each eligible brigade credits
+# independently, exactly like an ordinary brigade: filling just the sapper brigade (or
+# just the skirmisher brigade) earns that brigade's own discount, and the division
+# total is never used. This mirrors the in-game behaviour for these specific corps
+# only — keep in parity with SUPPORT_DIVISION_BRIGADE_DISCOUNT_FACTIONS in
+# web/src/rules/rules.ts.
+SUPPORT_DIVISION_BRIGADE_DISCOUNT_FACTIONS = frozenset(
+    {
+        "ntw3_ac_a11_x5_117",  # 13. Davout / I.C (1812 Russia)
+    }
+)
+
 MAX_TOTAL_UNIT_CARDS = 31
 MAX_FOOT_ARTILLERY = 2
 MAX_HORSE_ARTILLERY = 1
+# A cavalry-only corps (see is_cavalry_only_corps) may field two horse batteries
+# instead of the usual one.
+MAX_HORSE_ARTILLERY_CAVALRY_ONLY = 2
 MAX_HEAVY_CAVALRY = 10
 MAX_BRIGADE_SLOTS_PER_DIVISION = 7
 
@@ -65,6 +83,12 @@ class UnitCard:
     men_display: int | None = None
     unit_name: str = ""
     placement_source: str = ""
+    # Shared cap-group anchor values, resolved from the base unit of the cap group
+    # (see resolve_cap_groups). None until resolved; consumers fall back to this
+    # card's own cap / class. Kept in parity with groupCap / underlyingUnitClass in
+    # web/src/rules/rules.ts, populated by tools/build_web_data.py step 2.
+    group_cap: int | None = None
+    underlying_unit_class: str | None = None
 
     @classmethod
     def from_csv_row(cls, row: Mapping[str, str]) -> "UnitCard":
@@ -198,9 +222,42 @@ def parse_placement(code: str) -> Placement | None:
     return Placement(int(match.group("division")), int(match.group("brigade")))
 
 
+def resolve_cap_groups(cards: Iterable[UnitCard]) -> list[UnitCard]:
+    """Populate each card's group_cap and underlying_unit_class from the base
+    (non-commander) unit that anchors its shared cap group, resolved per faction.
+
+    Mirrors step 2 of tools/build_web_data.py so this module and the browser data
+    agree: a commander variant counts against its *base* unit's cap (not the
+    minimum across the group) and, when it is a combat general, occupies a slot of
+    its base unit's class. Falls back to the card's own cap / class when no base
+    row is present (e.g. an isolated selection)."""
+    cards = list(cards)
+    base_cap: dict[tuple[str, str], int] = {}
+    base_class: dict[tuple[str, str], str] = {}
+    for card in cards:
+        if card.unit_key != card.cap_group_key:
+            continue
+        key = (card.faction_key, card.cap_group_key)
+        base_cap[key] = card.cap
+        if card.unit_class != "general":
+            base_class[key] = card.unit_class
+    resolved: list[UnitCard] = []
+    for card in cards:
+        key = (card.faction_key, card.cap_group_key)
+        resolved.append(
+            replace(
+                card,
+                group_cap=base_cap.get(key, card.cap),
+                underlying_unit_class=base_class.get(key, card.unit_class),
+            )
+        )
+    return resolved
+
+
 def load_unit_cards(csv_path: str | Path) -> list[UnitCard]:
     with Path(csv_path).open(newline="", encoding="utf-8-sig") as handle:
-        return [UnitCard.from_csv_row(row) for row in csv.DictReader(handle)]
+        cards = [UnitCard.from_csv_row(row) for row in csv.DictReader(handle)]
+    return resolve_cap_groups(cards)
 
 
 def _is_support_unit(card: UnitCard) -> bool:
@@ -278,13 +335,20 @@ def build_roster_totals(
 
     recruitable_cards = list(recruitable_cards)
     support = support_divisions(recruitable_cards, faction_key)
+    support_brigade_discount = faction_key in SUPPORT_DIVISION_BRIGADE_DISCOUNT_FACTIONS
     for card in recruitable_cards:
         if card.faction_key != faction_key or card.is_general or card.placement is None:
             continue
         division = card.placement.division_id
-        if division in support:  # support divisions earn no discount
-            continue
         brigade = card.placement.brigade_id
+        if division in support:
+            # Support divisions earn no division discount. For the exception corps,
+            # their non-artillery (sapper / skirmisher) brigades still earn a brigade
+            # discount, so record those brigade totals only (never the division total,
+            # and never the artillery reserve brigades).
+            if support_brigade_discount and not _is_artillery(card):
+                brigades[(division, brigade)] = brigades[(division, brigade)].add(card)
+            continue
         divisions[division] = divisions[division].add(card)
         brigades[(division, brigade)] = brigades[(division, brigade)].add(card)
 
@@ -357,6 +421,27 @@ def calculate_army_cost(
                     )
                 )
 
+    # Orphan brigades: discount-eligible brigades whose division is itself a
+    # non-discounting support division (the SUPPORT_DIVISION_BRIGADE_DISCOUNT_FACTIONS
+    # exception). Their division never appears in `divisions`, so the loop above skips
+    # them; evaluate them here. Each credits independently on its own completeness (the
+    # division total is never used).
+    for division_brigade in sorted(brigades):
+        brigade_division, brigade_id = division_brigade
+        if brigade_division in divisions:
+            continue
+        brigade_total = brigades[division_brigade]
+        brigade_selected = selected_brigades[division_brigade]
+        if brigade_selected < brigade_total.required_count:
+            continue
+        completed.append(
+            CompletedGroup(
+                "brigade", brigade_division, brigade_id,
+                brigade_total.roster_cost, brigade_total.required_count,
+                brigade_selected, group_discount(brigade_total),
+            )
+        )
+
     normal_discount = sum(group.discount for group in completed)
     german_states = is_german_states(faction_key)
     applied_discount = normal_discount * 3 // 2 if german_states else normal_discount
@@ -410,14 +495,77 @@ def ac_selection_general_maxima(faction_key: str) -> GeneralCaps:
     return GeneralCaps(staff=caps.staff, combat=caps.combat + 2)
 
 
+def _capped_class_of(card: UnitCard) -> str:
+    """Class a card occupies for the artillery / heavy-cavalry caps. A combat
+    general consumes a slot of the unit it leads, so it counts by its underlying
+    unit class. Mirrors cappedClassOf in web/src/rules/rules.ts."""
+    if (
+        card.is_general
+        and card.underlying_unit_class
+        and classify_general(card) == "combat"
+    ):
+        return card.underlying_unit_class
+    return card.unit_class
+
+
+def _arm_class_of(card: UnitCard) -> str:
+    """Class a roster card contributes to the corps' arm mix. A general is classed
+    by the unit it leads; a staff general leads nothing and so counts for nothing.
+    Mirrors armClassOf in web/src/rules/rules.ts."""
+    if card.is_general:
+        return card.underlying_unit_class or ""
+    return card.unit_class
+
+
+def is_cavalry_only_corps(
+    recruitable_cards: Iterable[UnitCard], faction_key: str
+) -> bool:
+    """True when a corps can recruit cavalry but no infantry at all — the pure
+    cavalry corps (Murat's / Pajol's / Kellermann's RC, Uxbridge's CC, Platov's
+    Atamanstvo…). The game lets these field a second horse battery, so their
+    horse-artillery cap is MAX_HORSE_ARTILLERY_CAVALRY_ONLY. Artillery is a support
+    arm and never disqualifies a corps; only infantry does. Keep in parity with
+    isCavalryOnlyCorps in web/src/rules/rules.ts."""
+    has_cavalry = False
+    for card in recruitable_cards:
+        if card.faction_key != faction_key:
+            continue
+        arm_class = _arm_class_of(card)
+        if arm_class.startswith("infantry"):
+            return False
+        if arm_class.startswith("cavalry"):
+            has_cavalry = True
+    return has_cavalry
+
+
+def horse_artillery_max(
+    recruitable_cards: Iterable[UnitCard] | None, faction_key: str
+) -> int:
+    """The corps' horse-artillery cap: two for a cavalry-only corps, otherwise one.
+    Without the corps roster it falls back to the standard cap."""
+    if recruitable_cards is None:
+        return MAX_HORSE_ARTILLERY
+    if is_cavalry_only_corps(recruitable_cards, faction_key):
+        return MAX_HORSE_ARTILLERY_CAVALRY_ONLY
+    return MAX_HORSE_ARTILLERY
+
+
 def check_known_limits(
     selected_cards: Sequence[UnitCard],
     faction_key: str,
     *,
     ac_selection_behavior: bool = False,
     staff_slot_index: int | None = None,
+    recruitable_cards: Sequence[UnitCard] | None = None,
 ) -> LimitCheck:
     counts = Counter(card.unit_class for card in selected_cards)
+    # Recount the capped classes (artillery / heavy cavalry) by underlying class so
+    # a combat general leading such a unit counts against its cap. Mirrors the
+    # cappedClassOf recount in web/src/rules/rules.ts.
+    for capped_class in ("artillery_foot", "artillery_horse", "cavalry_heavy"):
+        counts[capped_class] = sum(
+            1 for card in selected_cards if _capped_class_of(card) == capped_class
+        )
     counts["total_cards"] = len(selected_cards)
     counts["staff_generals"] = 0
     counts["combat_generals"] = 0
@@ -436,8 +584,16 @@ def check_known_limits(
     for index, card in enumerate(selected_cards):
         classification = classify_general(card)
         if classification == "staff":
+            # Two separate rules, easily conflated:
+            #   * a corps may hold at most ONE staff general anywhere in the build — slot
+            #     or not (capped via staff_generals below);
+            #   * the staff SLOT holds exactly one card, which need not be a staff general
+            #     — the game lets a combat general command, and the corps' own staff
+            #     general then be recruited as an ordinary unit (real replays do this).
+            # So a staff general occupies the slot only when it IS the slot card.
             counts["staff_generals"] += 1
-            counts["staff_slot_occupants"] += 1
+            if index == staff_slot_index:
+                counts["staff_slot_occupants"] += 1
         elif classification == "combat":
             counts["combat_generals"] += 1
             if index == staff_slot_index:
@@ -452,8 +608,10 @@ def check_known_limits(
     )
     maxima = {
         "total_cards": MAX_TOTAL_UNIT_CARDS,
+        # Never two staff generals in one build, wherever they sit.
+        "staff_generals": caps.staff,
         "artillery_foot": MAX_FOOT_ARTILLERY,
-        "artillery_horse": MAX_HORSE_ARTILLERY,
+        "artillery_horse": horse_artillery_max(recruitable_cards, faction_key),
         "cavalry_heavy": MAX_HEAVY_CAVALRY,
         "staff_slot_occupants": caps.staff,
         "combat_generals_against_cap": caps.combat,
@@ -468,7 +626,14 @@ def check_known_limits(
     for card in selected_cards:
         cap_groups[(card.faction_key, card.cap_group_key)].append(card)
     for (card_faction, group_key), cards in sorted(cap_groups.items()):
-        positive_caps = [card.cap for card in cards if card.cap > 0]
+        # The shared group cap is the base unit's cap (a commander variant counts
+        # against its underlying unit's cap), mirroring c.groupCap ?? c.cap in
+        # web/src/rules/rules.ts — not the minimum across the group's members.
+        positive_caps = [
+            (card.group_cap if card.group_cap is not None else card.cap)
+            for card in cards
+        ]
+        positive_caps = [cap for cap in positive_caps if cap > 0]
         if not positive_caps:
             continue
         maximum = min(positive_caps)

@@ -15,6 +15,8 @@ from tools.army_builder_rules import (
     calculate_army_cost,
     check_known_limits,
     general_caps,
+    is_cavalry_only_corps,
+    resolve_cap_groups,
 )
 
 
@@ -31,6 +33,8 @@ def card(
     men_display: int | None = None,
     unit_name: str = "",
     placement_source: str = "",
+    group_cap: int | None = None,
+    underlying_unit_class: str | None = None,
 ) -> UnitCard:
     return UnitCard(
         unit_key=key,
@@ -48,6 +52,8 @@ def card(
         men_display=men_display,
         unit_name=unit_name,
         placement_source=placement_source,
+        group_cap=group_cap,
+        underlying_unit_class=underlying_unit_class,
     )
 
 
@@ -165,6 +171,92 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(result.normal_discount, 6)
         self.assertEqual(result.completed_groups[0].division_id, 1)
 
+    def test_davout_support_division_grants_sapper_skirmisher_brigade_discount(self) -> None:
+        # 13. Davout / I.C (1812 Russia) is the exception corps: the non-artillery
+        # (sapper / skirmisher) brigades of its final artillery-support division earn
+        # a brigade discount, while the artillery reserve brigades still do not.
+        faction = "ntw3_ac_a11_x5_117"
+        inf = card("inf", faction=faction, division=1, brigade=1, cost=500, cap=2)
+        art = card(
+            "art", faction=faction, unit_class="artillery_foot",
+            division=7, brigade=1, cost=100, cap=2,
+        )
+        sapper = card(
+            "ntw3_inf_grena_117_999_0523", faction=faction, unit_class="infantry_grenadiers",
+            division=7, brigade=5, cost=276, cap=2, unit_name="Sapeurs [G4]",
+        )
+        skirm = card(
+            "ntw3_inf_skirm_117_999_4780", faction=faction, unit_class="infantry_skirmishers",
+            division=7, brigade=6, cost=185, cap=6, unit_name="Tirailleurs [S2]",
+        )
+        roster = [inf, art, sapper, skirm]
+        selected = [inf, inf, art, art, sapper, sapper] + [skirm] * 6
+        result = calculate_army_cost(selected, roster, faction)
+        groups = {
+            (g.group_type, g.division_id, g.brigade_id) for g in result.completed_groups
+        }
+        self.assertIn(("division", 1, None), groups)
+        self.assertIn(("brigade", 7, 5), groups)
+        self.assertIn(("brigade", 7, 6), groups)
+        self.assertNotIn(("brigade", 7, 1), groups)
+        # 10 (div 1) + floor(552*1/100)=5 (sappers) + floor(1110*5/100)=55 (skirmishers).
+        self.assertEqual(result.normal_discount, 10 + 5 + 55)
+
+    def test_davout_support_division_brigades_discount_independently(self) -> None:
+        faction = "ntw3_ac_a11_x5_117"
+        art = card(
+            "art", faction=faction, unit_class="artillery_foot",
+            division=7, brigade=1, cost=100, cap=2,
+        )
+        sapper = card(
+            "ntw3_inf_grena_117_999_0523", faction=faction, unit_class="infantry_grenadiers",
+            division=7, brigade=5, cost=276, cap=2, unit_name="Sapeurs [G4]",
+        )
+        skirm = card(
+            "ntw3_inf_skirm_117_999_4780", faction=faction, unit_class="infantry_skirmishers",
+            division=7, brigade=6, cost=185, cap=6, unit_name="Tirailleurs [S2]",
+        )
+        roster = [art, sapper, skirm]
+        # Every skirmisher but no sapper -> the skirmisher brigade alone credits.
+        skirmishers_only = calculate_army_cost([skirm] * 6, roster, faction)
+        self.assertEqual(
+            [(g.group_type, g.division_id, g.brigade_id) for g in skirmishers_only.completed_groups],
+            [("brigade", 7, 6)],
+        )
+        self.assertEqual(skirmishers_only.normal_discount, 55)
+        self.assertEqual(skirmishers_only.final_cost, 1110 - 55)
+        # Every sapper but no skirmisher -> the sapper brigade alone credits.
+        sappers_only = calculate_army_cost([sapper, sapper], roster, faction)
+        self.assertEqual(
+            [(g.group_type, g.division_id, g.brigade_id) for g in sappers_only.completed_groups],
+            [("brigade", 7, 5)],
+        )
+        self.assertEqual(sappers_only.normal_discount, 5)
+        self.assertEqual(sappers_only.final_cost, 552 - 5)
+        # A partially filled brigade still credits nothing.
+        partial = calculate_army_cost([sapper], roster, faction)
+        self.assertEqual(partial.completed_groups, ())
+        self.assertEqual(partial.final_cost, 276)
+        # Both brigades filled -> each credits its own brigade discount.
+        both = calculate_army_cost([sapper, sapper] + [skirm] * 6, roster, faction)
+        self.assertEqual(both.normal_discount, 5 + 55)
+        self.assertEqual(both.final_cost, 552 + 1110 - 60)
+
+    def test_sapper_skirmisher_support_discount_is_scoped_to_exception_corps(self) -> None:
+        faction = "ntw3_ac_test_x5_001"  # not in the exception set
+        inf = card("inf", faction=faction, division=1, brigade=1, cost=500, cap=2)
+        art = card(
+            "art", faction=faction, unit_class="artillery_foot",
+            division=7, brigade=1, cost=100, cap=2,
+        )
+        sapper = card(
+            "ntw3_inf_grena_sap", faction=faction, unit_class="infantry_grenadiers",
+            division=7, brigade=5, cost=276, cap=2, unit_name="Sapeurs [G4]",
+        )
+        result = calculate_army_cost([inf, inf, art, art, sapper, sapper], [inf, art, sapper], faction)
+        self.assertEqual([g.division_id for g in result.completed_groups], [1])
+        self.assertEqual(result.normal_discount, 10)
+
     def test_builder_designated_specialist_reserve_earns_no_discount(self) -> None:
         # The builder can infer a support division of loose specialists with no
         # artillery; placement_source marks it, so it must earn no discount.
@@ -220,6 +312,168 @@ class LimitTests(unittest.TestCase):
         rules = {violation.rule for violation in result.violations}
         self.assertEqual(rules, {"artillery_foot", "artillery_horse"})
         self.assertEqual(MAX_BRIGADE_SLOTS_PER_DIVISION, 7)
+
+    def test_cavalry_only_corps_takes_two_horse_batteries(self) -> None:
+        # Mirrors rules.test.ts "a cavalry-only corps takes two horse batteries
+        # instead of one".
+        faction = "ntw3_ac_test_x5_001"
+        roster = [
+            card("staff", faction=faction, unit_class="general", men=16),
+            card("cav_0", faction=faction, unit_class="cavalry_heavy"),
+            card("cav_1", faction=faction, unit_class="cavalry_light"),
+            card("horse_0", faction=faction, unit_class="artillery_horse"),
+            card("horse_1", faction=faction, unit_class="artillery_horse"),
+            card("horse_2", faction=faction, unit_class="artillery_horse"),
+        ]
+        self.assertTrue(is_cavalry_only_corps(roster, faction))
+
+        two = [
+            card(f"horse_{index}", faction=faction, unit_class="artillery_horse")
+            for index in range(2)
+        ]
+        self.assertTrue(
+            check_known_limits(two, faction, recruitable_cards=roster).valid
+        )
+        # Without the roster the cap falls back to the standard 1.
+        self.assertEqual(
+            [violation.rule for violation in check_known_limits(two, faction).violations],
+            ["artillery_horse"],
+        )
+
+        three = two + [card("horse_2", faction=faction, unit_class="artillery_horse")]
+        over = check_known_limits(three, faction, recruitable_cards=roster)
+        self.assertEqual(
+            [(v.rule, v.actual, v.maximum) for v in over.violations],
+            [("artillery_horse", 3, 2)],
+        )
+
+    def test_corps_with_infantry_keeps_the_single_horse_artillery_cap(self) -> None:
+        faction = "ntw3_ac_test_x5_001"
+        roster = [
+            card("cav_0", faction=faction, unit_class="cavalry_heavy"),
+            card("inf_0", faction=faction, unit_class="infantry_line"),
+            card("horse_0", faction=faction, unit_class="artillery_horse"),
+            card("horse_1", faction=faction, unit_class="artillery_horse"),
+        ]
+        self.assertFalse(is_cavalry_only_corps(roster, faction))
+        two = [
+            card(f"horse_{index}", faction=faction, unit_class="artillery_horse")
+            for index in range(2)
+        ]
+        self.assertEqual(
+            [
+                violation.rule
+                for violation in check_known_limits(
+                    two, faction, recruitable_cards=roster
+                ).violations
+            ],
+            ["artillery_horse"],
+        )
+
+    def test_cavalry_only_corps_is_judged_by_the_units_its_generals_lead(self) -> None:
+        # A cavalry corps may still hold a foot battery (12. Murat / RC does) — only
+        # infantry disqualifies it. A combat general counts as the unit it leads.
+        faction = "ntw3_ac_test_x5_001"
+        cavalry_corps = [
+            card("cav_0", faction=faction, unit_class="cavalry_heavy"),
+            card(
+                "cav_0_com_1",
+                faction=faction,
+                unit_class="general",
+                men=80,
+                underlying_unit_class="cavalry_heavy",
+            ),
+            card("foot_0", faction=faction, unit_class="artillery_foot"),
+            card("horse_0", faction=faction, unit_class="artillery_horse"),
+        ]
+        self.assertTrue(is_cavalry_only_corps(cavalry_corps, faction))
+
+        with_infantry_general = cavalry_corps + [
+            card(
+                "inf_0_com_1",
+                faction=faction,
+                unit_class="general",
+                men=80,
+                underlying_unit_class="infantry_line",
+            )
+        ]
+        self.assertFalse(is_cavalry_only_corps(with_infantry_general, faction))
+
+        # Another corps' cards are ignored.
+        other = cavalry_corps + [
+            card("inf_x", faction="ntw3_ac_test_x5_002", unit_class="infantry_line")
+        ]
+        self.assertTrue(is_cavalry_only_corps(other, faction))
+
+    def test_combat_general_counts_against_the_artillery_cap_it_leads(self) -> None:
+        # Two foot batteries (at MAX_FOOT_ARTILLERY=2) + a combat general leading a
+        # foot battery = 3 > 2. Mirrors rules.test.ts "combat generals count against
+        # the artillery caps of the unit they lead".
+        faction = "france"
+        selected = [
+            card("foot_0", faction=faction, unit_class="artillery_foot"),
+            card("foot_1", faction=faction, unit_class="artillery_foot"),
+            card(
+                "foot_gen",
+                faction=faction,
+                unit_class="general",
+                men=80,
+                underlying_unit_class="artillery_foot",
+            ),
+        ]
+        result = check_known_limits(selected, faction)
+        self.assertEqual(result.counts["artillery_foot"], 3)
+        self.assertTrue(
+            any(violation.rule == "artillery_foot" for violation in result.violations)
+        )
+
+    def test_multi_cap_base_unit_and_commander_share_the_base_cap(self) -> None:
+        # Base infantry cap 2; commander variant cap 1 but shares the base cap (2).
+        # Mirrors rules.test.ts "multi-cap base unit may be taken up to its cap, and
+        # the commander shares it".
+        faction = "france"
+        base = card("ntw3_inf_line_005_999_3237", faction=faction, cap=2, group_cap=2)
+        commander = card(
+            "ntw3_inf_line_005_999_3237_com_2400",
+            faction=faction,
+            unit_class="general",
+            men=80,
+            cap=1,
+            group_cap=2,
+        )
+        rule = f"unit_cap:{faction}:{base.unit_key}"
+        # Two of the base unit is allowed (cap 2), not falsely capped at 1.
+        legal = check_known_limits([base, base], faction)
+        self.assertFalse(any(v.rule == rule for v in legal.violations))
+        # base + base + commander = 3 against a shared cap of 2 -> violation.
+        over = check_known_limits([base, base, commander], faction)
+        violation = next(v for v in over.violations if v.rule == rule)
+        self.assertEqual(violation.maximum, 2)
+        self.assertEqual(violation.actual, 3)
+
+    def test_resolve_cap_groups_uses_base_unit_cap_and_class(self) -> None:
+        # resolve_cap_groups must mirror build_web_data.py step 2: a commander
+        # variant inherits its base unit's cap and (combat) underlying class.
+        faction = "france"
+        base = card(
+            "ntw3_art_foot_080_006_0209",
+            faction=faction,
+            unit_class="artillery_foot",
+            cap=2,
+        )
+        commander = card(
+            "ntw3_art_foot_080_006_0209_com_0308",
+            faction=faction,
+            unit_class="general",
+            men=80,
+            cap=1,
+        )
+        resolved = {c.unit_key: c for c in resolve_cap_groups([base, commander])}
+        self.assertEqual(resolved[base.unit_key].group_cap, 2)
+        self.assertEqual(resolved[commander.unit_key].group_cap, 2)
+        self.assertEqual(
+            resolved[commander.unit_key].underlying_unit_class, "artillery_foot"
+        )
 
     def test_staff_general_is_based_only_on_exact_raw_men(self) -> None:
         faction = "france"
