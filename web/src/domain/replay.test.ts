@@ -132,6 +132,21 @@ describe("readStrings", () => {
   it("ignores a truncated trailing record", () => {
     expect(readStrings(file(str("ok"), [0x0e, 0xff, 0xff, 0x41]))).toEqual(["ok"]);
   });
+
+  it("rejects a flood of false tags without decoding each one", () => {
+    // Every byte is a tag claiming 3,598 characters of U+0E0E. Decoding each
+    // candidate in full before rejecting it took seconds per megabyte.
+    const flood = new Uint8Array(4 * 1024 * 1024).fill(0x0e);
+    const started = performance.now();
+    expect(readStrings(flood)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it("keeps a leading U+FEFF rather than stripping it, so the record is judged as written", () => {
+    // TextDecoder strips a BOM by default; Python's utf-16-le codec does not. Read
+    // as written, U+FEFF is not text a replay stores, so the record is rejected.
+    expect(readStrings(file(str("\ufeffok")))).toEqual([]);
+  });
 });
 
 describe("splitDisplayName", () => {
@@ -254,6 +269,68 @@ describe("parseReplay", () => {
     expect(parsed.armies[0].player).toBe("Djokodal");
     expect(parsed.armies[0].units.map((u) => u.key)).toEqual(reserve.units);
     expect(parsed.warnings).toEqual([]);
+  });
+
+  it("finds a custom army, whose key is a bare faction key and matches no pattern", () => {
+    // Custom armies (`denmark`, `britain`, `aaa_lordz`…) are keyed by the faction
+    // key straight out of the factions table, so a key *pattern* cannot see them
+    // and the whole army silently vanishes from the battle.
+    const danish = {
+      key: "denmark",
+      staff: "ntw3_gen_staff_005_1_0539",
+      player: "Frederik",
+      units: ["ntw3_art_foot_005_003_0450", "ntw3_cav_heavy_005_999_0228"],
+      corpsName: "7. Danmark",
+      flag: "data\\ui\\flags\\f_cu_denmark",
+    };
+    const parsed = parseReplay(
+      file(
+        keyBlock(ARMY_A),
+        keyBlock(danish),
+        nameBlock({ ...ARMY_A, general: "Arthur Wellesley 'Wellington'", names: ARMY_A_NAMES }),
+        nameBlock({
+          ...danish,
+          general: "Christian von Augustenbrog",
+          names: ["3-pund artilleri til fods [F6]", "Holstenske Ryttere 'Dorrien' [C2]"],
+        }),
+      ),
+    );
+
+    expect(parsed.armies.map((a) => a.factionKey)).toEqual([ARMY_A.key, danish.key]);
+    const dk = parsed.armies[1];
+    expect(dk.player).toBe("Frederik");
+    expect(dk.corpsName).toBe("7. Danmark");
+    expect(dk.staffKey).toBe(danish.staff);
+    expect(dk.general).toBe("Christian von Augustenbrog");
+    expect(dk.units.map((u) => u.key)).toEqual(danish.units);
+    expect(dk.units[0].regiment).toBe("3-pund artilleri til fods");
+    // Neither field is encoded in a custom army's key, so both stay blank rather
+    // than being carved out of an arbitrary word.
+    expect(dk.side).toBe("");
+    expect(dk.corpsId).toBe("");
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it("does not mistake the player name for an army key", () => {
+    // The player name is the *other* string a unit key follows; what separates it
+    // is that a unit key (the commander) comes right before it. Read as a marker,
+    // it would split the corps in two and strand its units in a phantom army.
+    const parsed = parseReplay(file(keyBlock(ARMY_A)));
+    expect(parsed.armies.map((a) => a.factionKey)).toEqual([ARMY_A.key]);
+    expect(parsed.armies[0].units.map((u) => u.key)).toEqual(ARMY_A.units);
+  });
+
+  it("does not turn the player into an army when the commander slot is empty", () => {
+    // An empty string is never read, so the block arrives as [key][player][units…]
+    // and the player sits where a custom army's key would.
+    const noStaff = { ...ARMY_A, staff: "" };
+    const danish = { ...noStaff, key: "denmark", flag: "data\\ui\\flags\\f_cu_denmark" };
+    for (const army of [noStaff, danish]) {
+      const parsed = parseReplay(file(keyBlock(army), keyBlock(ARMY_B)));
+      expect(parsed.armies.map((a) => a.factionKey)).toEqual([army.key, ARMY_B.key]);
+      expect(parsed.armies[0].player).toBe(ARMY_A.player);
+      expect(parsed.armies[0].flag).toBe(army.flag);
+    }
   });
 
   it("returns an empty battle for a file that is not a replay", () => {

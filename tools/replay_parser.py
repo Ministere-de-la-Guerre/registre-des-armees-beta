@@ -23,6 +23,9 @@ STRING_TAG = 0x0E
 
 #: `ntw3_ac_a11_x5_117` / `ntw3_ac_a11_r5_131` — the letter before the slot count is
 #: the corps *type* (`x` line, `r` reserve cavalry), so it must not be pinned.
+#: Army-corps and TOW corps only: a *custom army* is keyed by its bare faction key
+#: (`denmark`, `britain`, `aaa_lordz`…), which no pattern can pick out of a
+#: stream of localised text — see `_army_keys`.
 ARMY_KEY_RE = re.compile(r"^ntw3_(?:ac|tow)_[a-z]\d{2}_[a-z]\d+_(\d+)$")
 FLAG_RE = re.compile(r"^data\\ui\\flags\\", re.I)
 UNIT_PREFIXES = ("ntw3_inf_", "ntw3_cav_", "ntw3_art_", "ntw3_nav_", "ntw3_gen_")
@@ -47,24 +50,28 @@ COMPOSITE_NO_RE = re.compile(r"\d+(?:[a-zA-Z-]{0,3}[./]{1,2}\d+)+")
 _QUOTES = {0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D}
 
 
-def _plausible(text: str) -> bool:
-    """Reject candidates that decoded as text but are really binary.
+def _plausible(blob: bytes, start: int, count: int) -> bool:
+    """Reject candidates that look like strings but are really binary.
 
     A uint32 field (tag 0x03) can contain a 0x0E byte, which looks like a string tag
     and starts a UTF-16 read on the wrong byte. Such reads pair a data byte with an
     ASCII byte and land in CJK/Hangul/PUA; genuine strings are Latin (plus
     Cyrillic/Greek headroom for eastern factions) and mostly plain ASCII.
+
+    Checked on the raw code units, bailing at the first one that settles it, so a
+    false tag costs a character or two rather than a decode of up to 128 KB.
     """
-    ascii_n = 0
-    for ch in text:
-        o = ord(ch)
+    other = 0
+    for k in range(start, start + count * 2, 2):
+        o = blob[k] | (blob[k + 1] << 8)
         if 0x20 <= o <= 0x7E:
-            ascii_n += 1
-        elif 0xA0 <= o <= 0x04FF or o in _QUOTES:
-            pass
-        else:
+            continue
+        if not (0xA0 <= o <= 0x04FF or o in _QUOTES):
             return False
-    return ascii_n * 2 >= len(text)
+        other += 1
+        if other * 2 > count:
+            return False  # can no longer be mostly ASCII
+    return True
 
 
 def read_strings(blob: bytes) -> list[str]:
@@ -77,18 +84,11 @@ def read_strings(blob: bytes) -> list[str]:
             continue
         count = int.from_bytes(blob[i + 1 : i + 3], "little")
         end = i + 3 + count * 2
-        if count == 0 or end > n:
-            i += 1
-            continue
-        try:
-            text = blob[i + 3 : end].decode("utf-16-le")
-        except UnicodeDecodeError:
-            i += 1
-            continue
-        if not _plausible(text):
+        if count == 0 or end > n or not _plausible(blob, i + 3, count):
             i += 1  # step one byte: the real record may start just after a false tag
             continue
-        out.append(text)
+        # _plausible admits no surrogates, so this cannot raise.
+        out.append(blob[i + 3 : end].decode("utf-16-le"))
         i = end
     return out
 
@@ -145,10 +145,53 @@ def _is_unit_key(s: str) -> bool:
     return s.startswith(UNIT_PREFIXES)
 
 
+def _army_keys(strings: list[str]) -> set[str]:
+    """Every string this file uses as an army marker.
+
+    Army-corps and TOW corps announce themselves with a recognisable key, but a
+    custom army's marker is its bare faction key — `denmark`, `aaa_lordz` — an
+    ordinary word, so it has to be found by *position* instead: in a key block the
+    army key is the string immediately before the commander slot. The only other
+    string a unit key follows is the player name, and that one is itself preceded
+    by a unit key (the commander), which tells the two apart.
+
+    An EMPTY commander slot breaks that: empty strings are never read, so the block
+    becomes [army key][player][unit keys…][player] and the player name lands in the
+    army key's position. It gives itself away by reappearing straight after the unit
+    run, and the real army key is then the string before it.
+
+    Name blocks hold no unit keys at all, so they are never found this way; they
+    are picked up by string equality against the keys the key blocks yielded."""
+
+    def marker_like(j: int) -> bool:
+        return 0 <= j < len(strings) and not _is_unit_key(strings[j]) and not FLAG_RE.match(strings[j])
+
+    keys: set[str] = set()
+    for i, s in enumerate(strings):
+        if ARMY_KEY_RE.match(s):
+            keys.add(s)
+        elif not marker_like(i):
+            continue
+        elif (
+            i + 1 < len(strings)
+            and _is_unit_key(strings[i + 1])
+            and (i == 0 or not _is_unit_key(strings[i - 1]))
+        ):
+            j = i + 1
+            while j < len(strings) and _is_unit_key(strings[j]):
+                j += 1
+            if j >= len(strings) or strings[j] != s:
+                keys.add(s)
+            elif marker_like(i - 1):
+                keys.add(strings[i - 1])
+    return keys
+
+
 def _blocks(strings: list[str]) -> list[tuple[str, list[str]]]:
     """Split the string stream into (army_key, block) runs at each army-key marker, so
     trailing footer strings can never bleed from one army into the next."""
-    starts = [i for i, s in enumerate(strings) if ARMY_KEY_RE.match(s)]
+    keys = _army_keys(strings)
+    starts = [i for i, s in enumerate(strings) if s in keys]
     out = []
     for n, i in enumerate(starts):
         end = starts[n + 1] if n + 1 < len(starts) else len(strings)
@@ -219,19 +262,23 @@ def parse(blob: bytes) -> Battle:
         elif not battle.wind and s.startswith("wind_level_"):
             battle.wind = s
 
-    by_key: dict[str, Army] = {}
+    # A battle may contain the same corps more than once. The setup writes every
+    # army's key block first, followed by the matching name blocks, so match each
+    # name block to the next unresolved occurrence of its corps key rather than
+    # treating army_key as an army identity.
+    awaiting_names: dict[str, list[Army]] = {}
     for army_key, body in _blocks(strings):
-        army = by_key.get(army_key)
-        if army is None:
+        if any(_is_unit_key(s) for s in body):
             # --- key block: [staff][player][unit keys…][player][corps name][flag]
             m = ARMY_KEY_RE.match(army_key)
             army = Army(
                 army_key=army_key,
                 corps_id=m.group(1) if m else "",
-                side=army_key.split("_")[2] if len(army_key.split("_")) > 2 else "",
+                # Side and corps id live in the key pattern; a custom army has neither.
+                side=army_key.split("_")[2] if m and len(army_key.split("_")) > 2 else "",
             )
-            by_key[army_key] = army
             battle.armies.append(army)
+            awaiting_names.setdefault(army_key, []).append(army)
             # The FIRST key in the block is the commander slot, whatever key sits in
             # it. The role is positional, not a property of the key: the game lets a
             # player put a *combat* general in command (and then field the corps' own
@@ -255,6 +302,10 @@ def parse(blob: bytes) -> Battle:
             continue
 
         # --- name block: [player][flag][general][unit display names…]
+        pending = awaiting_names.get(army_key)
+        if not pending:
+            continue
+        army = pending.pop(0)
         start = next((i for i, s in enumerate(body) if FLAG_RE.match(s)), -1)
         if start < 0 or start + 1 >= len(body):
             continue
@@ -292,7 +343,8 @@ def main() -> None:
     for w in battle.warnings:
         print(f"!! {w}")
     for a in battle.armies:
-        print(f"\n{'=' * 78}\n{a.corps_name or a.army_key}   [{a.army_key}]  side {a.side}")
+        side = f"  side {a.side}" if a.side else ""
+        print(f"\n{'=' * 78}\n{a.corps_name or a.army_key}   [{a.army_key}]{side}")
         print(f"  player   : {a.player or '(AI / unassigned)'}")
         print(f"  general  : {a.general}   [{a.staff_key}]")
         print(f"  units    : {len(a.units)}")

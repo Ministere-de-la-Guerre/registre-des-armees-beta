@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { assetUrl } from "../data/assets";
 import type { FactionRoster, UnitCard } from "../domain/types";
 import {
@@ -15,6 +15,8 @@ import {
   effectiveCap,
   emptyBuild,
   evaluateAdd,
+  evaluateSetCommander,
+  fillDivision,
   generalSwapFor,
   groupQtyOf,
   hasCombatGeneralInstances,
@@ -27,6 +29,7 @@ import {
   summarize,
   swapInstanceUnit,
   unitsWithCombatGenerals,
+  withCommander,
 } from "../state/build";
 import { type FilterState, defaultFilters, isFilterActive, isHiddenByGeneralSwitch, matchesCard } from "../state/filters";
 import { combinedTowLayout, orderBrigadeCards } from "../state/ordering";
@@ -51,7 +54,7 @@ import { TowRollModal } from "./TowRollModal";
 import { TowGenerateModal } from "./TowGenerateModal";
 import { SaveLoadBar } from "./SaveLoadBar";
 import { Tooltip } from "./Tooltip";
-import { deliverImage, renderBuildImage } from "./exportBuildImage";
+import { type DeliverResult, deliverImage, renderBuildImage, shareImageFile } from "./exportBuildImage";
 import { isCoarsePointer, isPhone } from "./useCoarsePointer";
 
 // Shared empties for the combined-corps view, where the grid "divisions" are
@@ -137,9 +140,15 @@ export function Builder({
   // "divisions" are brigade types pooled across corps. On by default; sticky
   // across corps switches within a session; harmless (unused) for non-TOW rosters.
   const [combinedTow, setCombinedTow] = useState(true);
+  // Locate mode (tray "Locate units" button): the grid rings every unit in the build,
+  // and clicking one in the tray scrolls the grid to it and flashes it. TOW shows
+  // the separate corps while it is on, so each unit sits under its own corps.
+  const [locating, setLocating] = useState(false);
+  const [locateFlash, setLocateFlash] = useState<string | null>(null);
+  const mapRef = useRef<HTMLDivElement>(null);
   // Whether the grid uses the pooled brigade-type layout: always for custom
-  // armies, and for TOW when the "Combine corps" toggle is on.
-  const combinedView = isCustom || (isTow && combinedTow);
+  // armies, and for TOW when the "Combine corps" toggle is on (unless locating).
+  const combinedView = isCustom || (isTow && combinedTow && !locating);
 
   useEffect(() => {
     // A seeded army (imported from a replay) resolves through the same path as a
@@ -164,6 +173,8 @@ export function Builder({
     setSwapInstanceId(null);
     setTowRollOpen(false);
     setTowGenerateOpen(false);
+    setLocating(false);
+    setLocateFlash(null);
     // Enable every source corps by default (the combined view pools them all;
     // >4 is over the game's roll size, which the header banner flags).
     setEnabledCorps(isTowFactionKey(roster.factionKey) ? new Set(allTowSourceCorpsIds(roster.cards)) : null);
@@ -239,6 +250,17 @@ export function Builder({
     return m;
   }, [index, build, combatCap, roster.cards]);
 
+  // The same for putting a general in the staff slot ("Set commander"): the commander
+  // counts toward the 31 cards, its unit's shared cap, one-general-per-unit and the
+  // class caps like any other card, so the route must not side-step them.
+  const commanderBlockReasons = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const c of roster.cards) {
+      if (c.isGeneral) m.set(c.unitKey, evaluateSetCommander(index, build, c)?.reason ?? null);
+    }
+    return m;
+  }, [index, build, roster.cards]);
+
   // The 10,000 ceiling is soft: instead of blocking, we flag (red cost) any unit
   // whose selection would push the build's total past it. Computed once per build.
   const overBudgetCards = useMemo(() => {
@@ -280,6 +302,13 @@ export function Builder({
 
   const isDimmed = (card: UnitCard) => isFilterActive(filters) && !matchesCard(card, filters, pickRatePct);
   const isBlocked = (card: UnitCard) => blockReasons.get(card.unitKey) != null;
+  // Why a grid click on this card would be refused. A staff general's click sets the
+  // commander or recruits him (staffGeneralAction), so it answers for whichever of the
+  // two the click will actually do; every other card's click adds a copy.
+  const gridBlockReason = (card: UnitCard): string | null =>
+    card.isGeneral && card.generalKind === "staff" && staffGeneralAction(index, build, card) === "set-commander"
+      ? (commanderBlockReasons.get(card.unitKey) ?? null)
+      : (blockReasons.get(card.unitKey) ?? null);
   const isOverBudget = (card: UnitCard) => overBudgetCards.get(card.unitKey) === true;
   // Soft 4-corps ceiling (TOW): a card is "over" when its source corps is already
   // in the build beyond the first 4 rolled, or adding it would open a 5th corps.
@@ -335,18 +364,23 @@ export function Builder({
   // action (add / set commander) instead of re-peeking. Used for every path that
   // clears the peek without acting (scroll/outside-tap dismiss, opening full
   // details) so `primedKey` can't desync from `peek`.
-  const dismissPeek = () => {
+  const dismissPeek = useCallback(() => {
     setPeek(null);
     setPrimedKey(null);
-  };
+  }, []);
 
   const toggleStaff = (card: UnitCard) => {
-    // The cost ceiling is soft, so a commander can always be set (its cost just
-    // shows red when it pushes the total over). Other slot rules are unaffected.
-    setBuild((b) => {
-      if (b.staffSlotUnitKey === card.unitKey) return { ...b, staffSlotUnitKey: null };
-      return { ...b, instances: b.instances.filter((i) => i.unitKey !== card.unitKey), staffSlotUnitKey: card.unitKey };
-    });
+    // The cost ceiling is soft, so a commander's cost never blocks it (it just shows
+    // red when it pushes the total over) — but the hard limits do, exactly as for an
+    // add: see evaluateSetCommander. Clearing the slot is always allowed.
+    if (build.staffSlotUnitKey !== card.unitKey) {
+      const reason = commanderBlockReasons.get(card.unitKey);
+      if (reason) {
+        setMessage(reason);
+        return;
+      }
+    }
+    setBuild((b) => (b.staffSlotUnitKey === card.unitKey ? { ...b, staffSlotUnitKey: null } : withCommander(b, card.unitKey)));
   };
 
   /** Left-click on a staff general in the grid.
@@ -389,6 +423,41 @@ export function Builder({
     setMessage(`Removed all units from ${info ? `${roman(info.division)} · ${info.name}` : `corps ${sourceCorpsId}`}.`);
   };
 
+  const toggleLocate = () => {
+    setLocateFlash(null);
+    setLocating(!locating);
+    if (!locating)
+      setMessage(`Locate: your units are ringed in the grid — ${coarse ? "tap" : "click"} one in the bar to jump to it.`);
+  };
+
+  // Find a build unit in the grid. A TOW unit whose corps is switched off in the
+  // Corps roll menu has no grid card, so its corps is switched back on first.
+  const locateUnit = (card: UnitCard) => {
+    const id = card.towSourceCorpsId;
+    if (id && enabledCorps && !enabledCorps.has(id)) {
+      toggleCorps(id, true);
+      const info = towCorpsInfo?.get(id);
+      setMessage(`Turned ${info ? `${roman(info.division)} · ${info.name}` : `corps ${id}`} back on to show this unit.`);
+    }
+    setLocateFlash(card.unitKey);
+  };
+
+  // Scroll the located card into view once the grid has rendered it, and let the
+  // flash run out. No card means a filter is hiding it.
+  useEffect(() => {
+    if (!locateFlash) return;
+    const frame = requestAnimationFrame(() => {
+      const el = mapRef.current?.querySelector(`[data-unit-key="${CSS.escape(locateFlash)}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+      else setMessage(`${index.byKey.get(locateFlash)?.name ?? "That unit"} is hidden by your filters — clear them to see it.`);
+    });
+    const timer = setTimeout(() => setLocateFlash(null), 2600);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+    };
+  }, [locateFlash, index]);
+
   // Upgrade units already in the build by swapping a plain copy for the combat
   // general of the same unit — the cheapest such swaps that fit the remaining cap,
   // leaving any existing combat generals in place. Never adds new units.
@@ -405,7 +474,7 @@ export function Builder({
       instances: b.instances.map((i) => (swap.has(i.id) ? { id: i.id, unitKey: swap.get(i.id)! } : i)),
     }));
     const n = replacements.length;
-    setMessage(`Upgraded ${n} unit${n === 1 ? "" : "s"} with the cheapest combat general${n === 1 ? "" : "s"}.`);
+    setMessage(`Upgraded ${n} unit${n === 1 ? "" : "s"} with combat general${n === 1 ? "" : "s"} to lower the build's cost.`);
   };
 
   // Swap every combat general back to the plain unit it leads (commander untouched).
@@ -446,19 +515,41 @@ export function Builder({
   // Export the build as a stretched-out single-line image (like the desktop unit
   // bar): copied to the clipboard on desktop, saved/shared to the device on touch.
   const hasBuild = build.instances.length > 0 || build.staffSlotUnitKey !== null;
+  // A rendered image the share sheet refused because the tap that asked for it had
+  // expired while it rendered (WebKit): offered back behind a fresh "Share" tap.
+  const [pendingShare, setPendingShare] = useState<File | null>(null);
+  const reportDelivery = (result: DeliverResult) => {
+    if (result === "copied") setMessage("Build image copied to clipboard.");
+    // A download can't be confirmed (an installed iOS web app silently drops it), so
+    // say only that it was started.
+    else if (result === "downloaded") setMessage("Build image download started.");
+  };
   const exportImage = async () => {
     if (!hasBuild) return;
+    setPendingShare(null);
     try {
-      const blob = await renderBuildImage(index, build, {
+      // Start rendering but hand the pending image to deliverImage straight away: the
+      // clipboard write must begin inside this click, not after the render.
+      const render = renderBuildImage(index, build, {
         title: roster.armyCorpsName || roster.factionKey,
         subtitle: `${summary.totalCards} cards · ${summary.totalMen.toLocaleString()} men · ${summary.price.finalCost.toLocaleString()} gold`,
       });
       const base = (roster.armyCorpsName || roster.factionKey).replace(/[^\w-]+/g, "_").slice(0, 60) || "build";
-      const result = await deliverImage(blob, `${base}.png`, isCoarsePointer());
-      if (result === "copied") setMessage("Build image copied to clipboard.");
-      else if (result === "saved") setMessage("Build image saved.");
+      const result = await deliverImage(render, `${base}.png`, isCoarsePointer());
+      if (typeof result === "object") setPendingShare(result.retryShare);
+      else reportDelivery(result);
     } catch {
       setMessage("Couldn't export the build image.");
+    }
+  };
+  const sharePending = async () => {
+    const file = pendingShare;
+    if (!file) return;
+    setPendingShare(null);
+    try {
+      reportDelivery(await shareImageFile(file));
+    } catch {
+      setMessage("Couldn't share the build image.");
     }
   };
 
@@ -478,9 +569,16 @@ export function Builder({
     atCapOf,
     onAdd: coarse ? (card, anchor) => primeOrAct(card, tryAdd, anchor ?? new DOMRect()) : tryAdd,
     onDetails: coarse ? (card) => removeOneByKey(card.unitKey) : setDetail,
+    // Keyboard shortcuts name their action outright on every device: "i" opens the
+    // details, Delete drops a copy — whatever right-click / long-press mean here.
+    onKeyDetails: setDetail,
+    onKeyRemove: (card) => removeOneByKey(card.unitKey),
+    isStaffBlocked: (card) => gridBlockReason(card) != null,
     onHover: (card, anchor) => setHovered({ card, anchor }),
     onHoverEnd: () => setHovered(null),
     isPrimed: (key) => primedKey === key,
+    locateOf: (card) =>
+      locateFlash === card.unitKey ? "flash" : locating && isSelected(card.unitKey) ? "mark" : null,
     pickRateOf: (card) => {
       const rate = pickRates.rateOf(card.unitKey, card.baseUnitKey);
       return rate ? <PickRateBar rate={rate} thresholds={pickRates.season?.thresholds} /> : null;
@@ -507,10 +605,12 @@ export function Builder({
     [offeredNowKeys],
   );
 
-  // A TOW card is hidden when its source corps is not in the enabled roll. Only
-  // affects display (the build state is untouched); non-TOW cards are unaffected.
+  // A TOW card is hidden when its source corps is not in the enabled roll —
+  // staff generals included, since the game offers one only when his corps rolls.
+  // Only affects display (the build state is untouched); non-TOW cards are unaffected.
   const hiddenByCorpsRoll = useCallback(
-    (c: UnitCard) => enabledCorps != null && c.towSourceCorpsId != null && !enabledCorps.has(c.towSourceCorpsId),
+    (c: UnitCard) =>
+      enabledCorps != null && c.towSourceCorpsId != null && !enabledCorps.has(c.towSourceCorpsId),
     [enabledCorps],
   );
 
@@ -604,12 +704,18 @@ export function Builder({
     return { divisionMeta, brigadeMeta };
   }, [roster.cards, roster.factionKey, summary]);
 
+  // Counts exactly the cards the grid draws (same hiding rules as the layout above)
+  // that also match the filters.
   const matchCount = useMemo(
     () =>
       roster.cards.filter(
-        (c) => matchesCard(c, filters, pickRatePct) && !isHiddenByGeneralSwitch(c, filters) && !hiddenByRotation(c),
+        (c) =>
+          matchesCard(c, filters, pickRatePct) &&
+          !isHiddenByGeneralSwitch(c, filters) &&
+          !hiddenByRotation(c) &&
+          !hiddenByCorpsRoll(c),
       ).length,
-    [roster.cards, filters, hiddenByRotation, pickRatePct],
+    [roster.cards, filters, hiddenByRotation, hiddenByCorpsRoll, pickRatePct],
   );
 
   const current = { build, config, factionKey: roster.factionKey, armyCorpsName: roster.armyCorpsName };
@@ -623,6 +729,50 @@ export function Builder({
     if (result.missingKeys.length) setMessage(`Loaded “${saved.name}” — ${result.missingKeys.length} unknown unit(s) skipped.`);
     else setMessage(`Loaded “${saved.name}”.`);
   };
+
+  // "Take the whole division" (army-corps grid only: in the combined/TOW views a grid
+  // "division" is a brigade-type pool or a source corps, not a discount formation).
+  // Copies each division still lacks; the header button hides at 0.
+  const divisionFillCounts = useMemo(() => {
+    if (combinedView || isTow || !roster.factionKey.includes("_ac_")) return null;
+    const m = new Map<number, number>();
+    // Count what a click would really add, not the plan: a limit (artillery caps,
+    // 31 cards) can leave copies no click will ever take, and the button should then
+    // disappear rather than sit at "+ All 1" forever.
+    for (const dv of divisions) m.set(dv.division, fillDivision(index, build, dv.division, combatCap).added.length);
+    return m;
+  }, [combinedView, isTow, roster.factionKey, divisions, index, build, combatCap]);
+  const takeDivision = (division: number) => {
+    const label = `Division ${roman(division)}`;
+    const fill = fillDivision(index, build, division, combatCap);
+    if (fill.added.length === 0) {
+      setMessage(
+        fill.blockedReasons.length
+          ? `Couldn't add any units from ${label} — ${fill.blockedReasons.join(" ")}`
+          : `${label} has no units missing.`,
+      );
+      return;
+    }
+    setBuild(fill.build);
+    const n = fill.added.length;
+    setMessage(
+      n === fill.wanted
+        ? `Added ${n} unit${n === 1 ? "" : "s"} from ${label}.`
+        : `Added ${n} of ${fill.wanted} from ${label} — ${fill.blockedReasons.join(" ")}`,
+    );
+    const bugged = fill.added.find((c) => buggedUniformKey(c));
+    if (bugged) maybeWarnBugged(bugged);
+  };
+
+  // Any open modal takes over from the stat cards: the touch peek (which sits above
+  // the modal layer) is dismissed with its prime, and the hover card is dropped.
+  const modalOpen =
+    !!detail || !!buggedWarning || !!swapInstanceId || rotationOpen || towRollOpen || towGenerateOpen;
+  useEffect(() => {
+    if (!modalOpen) return;
+    dismissPeek();
+    setHovered(null);
+  }, [modalOpen, dismissPeek]);
 
   const over = summary.totalCards > MAX_TOTAL_UNIT_CARDS;
   const overCost = summary.price.finalCost > MAX_BUILD_COST;
@@ -699,7 +849,8 @@ export function Builder({
           >
             <input
               type="checkbox"
-              checked={combinedTow}
+              checked={combinedTow && !locating}
+              disabled={locating}
               onChange={(e) => setCombinedTow(e.target.checked)}
             />
             Combine corps
@@ -816,6 +967,20 @@ export function Builder({
           time. This combination won’t appear together in a real in-game roll.
         </div>
       ) : null}
+      {/* Rule breaks the add/commander checks can't prevent — a loaded or imported
+          save, or a build from before a rule existed. The price above still stands,
+          but the build could not be fielded as it is. */}
+      {summary.violationMessages.length > 0 && (
+        <div className="tow-warning banner build-violations" role="status">
+          ⚠ This build breaks {summary.violationMessages.length === 1 ? "a limit" : `${summary.violationMessages.length} limits`}{" "}
+          and can’t be fielded as is:
+          <ul>
+            {summary.violationMessages.map((m, i) => (
+              <li key={i}>{m}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="stage">
         <div className={`filters-drawer${filtersOpen ? "" : " closed"}`}>
@@ -829,7 +994,7 @@ export function Builder({
           />
         </div>
 
-        <div className={`map density-${density}`}>
+        <div className={`map density-${density}`} ref={mapRef}>
           {PICK_RATES_ENABLED && pickRates.show && (
             <div className="pr-header">
               <PickRateChip
@@ -851,6 +1016,8 @@ export function Builder({
             divisionNames={divisionNames}
             handlers={handlers}
             onStaffToggle={coarse ? (card, anchor) => primeOrAct(card, staffClick, anchor ?? new DOMRect()) : staffClick}
+            fillCounts={divisionFillCounts}
+            onTakeDivision={takeDivision}
           />
           {unplaced.length > 0 && (
             <section className="division" aria-label="Other units">
@@ -901,21 +1068,24 @@ export function Builder({
           setPeek({ card, anchor });
         }}
         corpsStat={isTow && towBuild ? { count: towBuild.count, max: LEGACY_TOW_MAX_SOURCE_CORPS, over: towBuild.over } : null}
+        locating={locating}
+        onToggleLocate={toggleLocate}
+        onLocate={locateUnit}
       />
 
-      {hovered && !detail && !peek && (
+      {hovered && !modalOpen && !peek && (
         <Tooltip
           card={hovered.card}
           anchor={hovered.anchor}
-          blockReason={blockReasons.get(hovered.card.unitKey) ?? null}
+          blockReason={gridBlockReason(hovered.card)}
         />
       )}
-      {peek && !detail && (
+      {peek && !modalOpen && (
         <Tooltip
           card={peek.card}
           anchor={peek.anchor}
           variant="peek"
-          blockReason={blockReasons.get(peek.card.unitKey) ?? null}
+          blockReason={gridBlockReason(peek.card)}
           onFullDetails={() => {
             setDetail(peek.card);
             dismissPeek();
@@ -928,6 +1098,7 @@ export function Builder({
           card={detail}
           inStaffSlot={inStaffSlot(detail.unitKey)}
           onSetCommander={detail.isGeneral ? () => toggleStaff(detail) : undefined}
+          setCommanderBlockedReason={inStaffSlot(detail.unitKey) ? null : (commanderBlockReasons.get(detail.unitKey) ?? null)}
           // Staff generals are only ever routed to the commander slot by the grid, but
           // the game lets a corps field one as an ordinary unit (with a combat general
           // commanding instead) — real replays do exactly that. Offer the second path
@@ -981,6 +1152,17 @@ export function Builder({
         <BuggedUniformModal card={buggedWarning} onClose={() => setBuggedWarning(null)} />
       )}
       {message && <div className="toast" role="status">{message}</div>}
+      {pendingShare && (
+        <div className="toast share-ready" role="dialog" aria-label="Share build image">
+          <span>Build image ready.</span>
+          <button type="button" className="btn small primary" onClick={sharePending}>
+            Share
+          </button>
+          <button type="button" className="btn small" onClick={() => setPendingShare(null)} aria-label="Dismiss">
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -997,9 +1179,12 @@ function UnplacedMedallion({ card, h }: { card: UnitCard; h: MedallionHandlers }
       dimmed={h.isDimmed(card)}
       blocked={blocked}
       overBudget={h.isOverBudget(card)}
+      locate={h.locateOf?.(card)}
       atCap={h.atCapOf(card)}
       onClick={(anchor) => h.onAdd(card, anchor)}
       onContextMenu={() => h.onDetails(card)}
+      onDetails={() => h.onKeyDetails(card)}
+      onRemove={h.isSelected(card.unitKey) ? () => h.onKeyRemove(card) : undefined}
       onHover={h.onHover}
       onHoverEnd={h.onHoverEnd}
       pickRate={h.pickRateOf?.(card)}

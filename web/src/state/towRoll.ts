@@ -92,7 +92,9 @@ export interface TowGeneralRoll {
 /** Legacy `NTW3AC.ToWFgenerals`: all staff generals are eligible, while combat
  *  generals are eligible only when their key's source-corps id is in the rolled
  *  source-corps list. Staff and combat pools are shuffled independently because
- *  `NTW3.Shuffle` reseeds on every call. */
+ *  `NTW3.Shuffle` reseeds on every call. This is the Lua list only: in-game a
+ *  staff general is still recruitable only when his own corps rolled (see
+ *  `rollTowArmy`). */
 export function rollTowGeneralKeys(
   cards: readonly UnitCard[],
   sourceCorpsIds: readonly string[],
@@ -130,9 +132,10 @@ export interface TowArmyRoll {
   cards: UnitCard[];
 }
 
-/** Convenience wrapper for the full legacy ToW background roll. Non-general
- *  cards are kept when their source-corps id was rolled. General cards are kept
- *  only when `ToWFgenerals` selected them. */
+/** Convenience wrapper for the full legacy ToW background roll. Every card is
+ *  kept only when its source-corps id was rolled — staff generals included, which
+ *  in-game appear only alongside their own corps. General cards must also have
+ *  been selected by `ToWFgenerals`. */
 export function rollTowArmy(cards: readonly UnitCard[], at: Date): TowArmyRoll {
   const sourceCorpsIds = rollTowSourceCorpsIds(cards, at);
   const generalKeys = rollTowGeneralKeys(cards, sourceCorpsIds, at);
@@ -142,7 +145,7 @@ export function rollTowArmy(cards: readonly UnitCard[], at: Date): TowArmyRoll {
     sourceCorpsIds,
     generalKeys,
     cards: cards.filter((card) => {
-      if (card.isGeneral) return selectedGeneralKeys.has(card.unitKey);
+      if (card.isGeneral && !selectedGeneralKeys.has(card.unitKey)) return false;
       const id = sourceCorpsIdOf(card);
       return id !== null && selectedSourceCorps.has(id);
     }),
@@ -288,17 +291,27 @@ export function findTowCorpsCombinationTime(
   };
 }
 
+/** The source corps a selected card needs rolled, or null when it has none
+ *  (non-TOW). Every TOW card needs its own corps — staff generals included: the
+ *  game offers a staff general only in windows where his corps rolled, even when
+ *  the build takes no other unit from that corps. */
+function requiredSourceCorpsId(key: string | null | undefined, index: RosterIndex): string | null {
+  const card = key ? index.byKey.get(key) : undefined;
+  return card?.towSourceCorpsId ?? null;
+}
+
 /** Distinct source-corps ids the build's units actually draw from, in first-seen
  *  order. This is the roll a player must land to field the current selection —
- *  independent of whatever is toggled in the Corps roll menu. */
+ *  independent of whatever is toggled in the Corps roll menu. The commander's
+ *  corps counts too, so a build of just a staff general still times his corps. */
 export function towSourceCorpsIdsInBuild(build: BuildState, index: RosterIndex): string[] {
   const ids: string[] = [];
-  const add = (key: string | undefined) => {
-    const id = key ? index.byKey.get(key)?.towSourceCorpsId ?? null : null;
+  const add = (key: string | null | undefined) => {
+    const id = requiredSourceCorpsId(key, index);
     if (id && !ids.includes(id)) ids.push(id);
   };
   for (const inst of build.instances) add(inst.unitKey);
-  add(build.staffSlotUnitKey ?? undefined);
+  add(build.staffSlotUnitKey);
   return ids;
 }
 
@@ -323,7 +336,7 @@ export function towCorpsCeiling(build: BuildState, index: RosterIndex): TowCorps
   const order = towSourceCorpsIdsInBuild(build, index);
   const counts = new Map<string, number>();
   const tally = (key: string | null | undefined) => {
-    const id = key ? index.byKey.get(key)?.towSourceCorpsId ?? null : null;
+    const id = requiredSourceCorpsId(key, index);
     if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
   };
   for (const inst of build.instances) tally(inst.unitKey);
@@ -343,14 +356,18 @@ export function isCardOverCorpsCeiling(card: UnitCard, ceiling: TowCorpsCeiling)
 }
 
 /** Distinct combat-general unitKeys the build actually uses, in first-seen order.
- *  Staff generals are excluded: the legacy TOW roll offers every staff general in
- *  every window, so only combat generals constrain which window works. */
+ *  Staff generals are excluded: `ToWFgenerals` lists every staff general, so once
+ *  his corps rolls he is offered — his corps (in `towSourceCorpsIdsInBuild`) is
+ *  the only constraint. A combat general commanding from the staff slot must be
+ *  among the four combat offers like any other. */
 export function towCombatGeneralKeysInBuild(build: BuildState, index: RosterIndex): string[] {
   const keys: string[] = [];
-  for (const inst of build.instances) {
-    const card = index.byKey.get(inst.unitKey);
+  const add = (key: string | null | undefined) => {
+    const card = key ? index.byKey.get(key) : undefined;
     if (card && isLegacyTowCombatGeneral(card) && !keys.includes(card.unitKey)) keys.push(card.unitKey);
-  }
+  };
+  for (const inst of build.instances) add(inst.unitKey);
+  add(build.staffSlotUnitKey);
   return keys;
 }
 

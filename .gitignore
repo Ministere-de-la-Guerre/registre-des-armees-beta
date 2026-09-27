@@ -6,8 +6,21 @@ __pycache__/
 # Local assistant/workspace scratch
 .claude/
 .agents/
+/PRIVATE.md
 
 # Curated release-upload staging (large installers, built locally, uploaded by hand)
 /_github_assets/
 /_github_assets_beta/
+
+# Local investigation scratch (replays, samples, throwaway scripts)
+/work_in_progress/
+
+# Pipeline reports: the tools/*.py builders write merge warnings, manifests and
+# validation summaries here, and reports/replay_stats/ holds replay-corpus statistics
+# (large, derived from a local folder of .replay files that is not in the repo).
+/reports/
+
+# Leftovers of an interrupted tools/build_army_corps_catalog.py staging swap.
+/assets/army_corps_by_theatre.staging/
+/assets/army_corps_by_theatre.old/
 

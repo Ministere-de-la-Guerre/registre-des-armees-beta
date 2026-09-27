@@ -33,6 +33,10 @@ interface TrayProps {
   onPeek: (card: UnitCard, anchor: DOMRect) => void;
   /** TOW-only "Corps N/4" roll stat for the collapsed touch strip; null otherwise. */
   corpsStat: { count: number; max: number; over: boolean } | null;
+  /** Locate mode: clicking a unit here finds it in the grid instead of opening details. */
+  locating: boolean;
+  onToggleLocate: () => void;
+  onLocate: (card: UnitCard) => void;
 }
 
 /** The build tray: the staff slot (commander), then one medallion per selected
@@ -66,6 +70,9 @@ function DesktopTray({
   onDetails,
   onHover,
   onHoverEnd,
+  locating,
+  onToggleLocate,
+  onLocate,
 }: TrayProps) {
   const { totalCards } = summary;
   const staffCard = build.staffSlotUnitKey ? index.byKey.get(build.staffSlotUnitKey) : undefined;
@@ -78,9 +85,22 @@ function DesktopTray({
   // remaining copies plus empty slots so the whole army fits one row.
   const emptyCount = Math.max(0, MAX_TOTAL_UNIT_CARDS - totalCards);
   const hasBuild = build.instances.length > 0 || build.staffSlotUnitKey !== null;
+  // Removing a copy unmounts its medallion without a mouseleave, which would leave
+  // its hover card stuck on screen — so end the hover first.
+  const removeInstance = (id: string) => {
+    onHoverEnd();
+    onRemoveInstance(id);
+  };
+  const clearStaff = () => {
+    onHoverEnd();
+    onClearStaff();
+  };
+  // Left-click: details, or in locate mode, find the unit in the grid.
+  const activate = (card: UnitCard) => (locating ? onLocate(card) : onDetails(card));
+  const activateLabel = locating ? "find it in the grid" : "show details";
 
   return (
-    <div className="tray">
+    <div className={`tray${locating ? " locating" : ""}`}>
       {/* The commander rides in the same flex row as the unit slots so its portrait
           is always exactly one slot wide, at any resolution. The label and the
           divider that follows keep it visually set apart as its own staff slot. */}
@@ -92,8 +112,11 @@ function DesktopTray({
               card={staffCard}
               inStaffSlot
               hideName
-              onClick={() => onDetails(staffCard)}
-              onContextMenu={onClearStaff}
+              onClick={() => activate(staffCard)}
+              activateLabel={activateLabel}
+              onContextMenu={clearStaff}
+              onRemove={clearStaff}
+              onDetails={() => onDetails(staffCard)}
               onHover={onHover}
               onHoverEnd={onHoverEnd}
             />
@@ -110,8 +133,11 @@ function DesktopTray({
             hideName
             showSpeed
             overCorps={isOverCorps(card)}
-            onClick={() => onDetails(card)}
-            onContextMenu={() => onRemoveInstance(inst.id)}
+            onClick={() => activate(card)}
+            activateLabel={activateLabel}
+            onContextMenu={() => removeInstance(inst.id)}
+            onRemove={() => removeInstance(inst.id)}
+            onDetails={() => onDetails(card)}
             onHover={onHover}
             onHoverEnd={onHoverEnd}
             onSwapGeneral={canSwapGeneral(card) ? () => onSwapGeneral(inst.id) : undefined}
@@ -124,6 +150,15 @@ function DesktopTray({
       </div>
 
       <div className="totals">
+        <button
+          className={`btn small locate-unit${locating ? " gold" : ""}`}
+          aria-pressed={locating}
+          disabled={!hasBuild && !locating}
+          onClick={onToggleLocate}
+          title="Show where your units sit in their corps: turn on, then click a unit in this bar to jump to it"
+        >
+          <span>Locate</span> <span>{locating ? "on" : "units"}</span>
+        </button>
         <button
           className="btn small auto-generals"
           disabled={autoGeneralsDisabled}
@@ -183,6 +218,9 @@ function TouchTray({
   onDetails,
   onPeek,
   corpsStat,
+  locating,
+  onToggleLocate,
+  onLocate,
 }: TrayProps) {
   const [expanded, setExpanded] = useState(false);
   const { totalCards } = summary;
@@ -191,6 +229,15 @@ function TouchTray({
     .map((inst) => ({ inst, card: index.byKey.get(inst.unitKey) }))
     .filter((e): e is { inst: { id: string; unitKey: string }; card: UnitCard } => Boolean(e.card));
   const hasBuild = build.instances.length > 0 || build.staffSlotUnitKey !== null;
+  // In locate mode a tap closes the sheet and jumps the grid to the unit; the
+  // stat-card peek is switched off so the tap reaches onClick.
+  const activate = (card: UnitCard) => {
+    if (!locating) return onDetails(card);
+    setExpanded(false);
+    onLocate(card);
+  };
+  const activateLabel = locating ? "find it in the grid" : "show details";
+  const peek = locating ? undefined : onPeek;
 
   return (
     <>
@@ -215,6 +262,13 @@ function TouchTray({
             <b className={corpsStat.over ? "over" : undefined}>{corpsStat.count}</b>/{corpsStat.max} corps
           </span>
         )}
+        {/* Broken limits (see the header banner, which collapsed chrome hides). */}
+        {summary.violationMessages.length > 0 && (
+          <span className="tray-stat" title={summary.violationMessages.join("\n")}>
+            <b className="over">⚠ {summary.violationMessages.length}</b>{" "}
+            limit{summary.violationMessages.length === 1 ? "" : "s"}
+          </span>
+        )}
         <span className="tray-strip-chevron" aria-hidden>
           {expanded ? "▾" : "▴"}
         </span>
@@ -235,9 +289,12 @@ function TouchTray({
                   <Medallion
                     card={staffCard}
                     inStaffSlot
-                    onClick={() => onDetails(staffCard)}
+                    onClick={() => activate(staffCard)}
+                    activateLabel={activateLabel}
                     onContextMenu={onClearStaff}
-                    onPeek={onPeek}
+                    onRemove={onClearStaff}
+                    onDetails={() => onDetails(staffCard)}
+                    onPeek={peek}
                     peekOn="tap"
                   />
                 ) : (
@@ -251,9 +308,12 @@ function TouchTray({
                   selected
                   showSpeed
                   overCorps={isOverCorps(card)}
-                  onClick={() => onDetails(card)}
+                  onClick={() => activate(card)}
+                  activateLabel={activateLabel}
                   onContextMenu={() => onRemoveInstance(inst.id)}
-                  onPeek={onPeek}
+                  onRemove={() => onRemoveInstance(inst.id)}
+                  onDetails={() => onDetails(card)}
+                  onPeek={peek}
                   peekOn="tap"
                   onSwapGeneral={canSwapGeneral(card) ? () => onSwapGeneral(inst.id) : undefined}
                   ledByGeneral={card.isGeneral && card.generalKind === "combat"}
@@ -261,7 +321,16 @@ function TouchTray({
               ))}
               {!hasBuild && <p className="tray-sheet-empty">No units yet — tap a unit in the grid to add it.</p>}
             </div>
+            {locating && <p className="tray-sheet-empty">Tap a unit to find it in the grid.</p>}
             <div className="tray-sheet-actions">
+              <button
+                className={`btn locate-unit${locating ? " gold" : ""}`}
+                aria-pressed={locating}
+                disabled={!hasBuild && !locating}
+                onClick={onToggleLocate}
+              >
+                {locating ? "Locate: on" : "Locate units"}
+              </button>
               <button className="btn auto-generals" disabled={autoGeneralsDisabled} onClick={onAutoGenerals}>
                 Auto generals
               </button>
