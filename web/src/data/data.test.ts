@@ -48,6 +48,36 @@ describe("generated data", () => {
     expect(version.towRows).toBeGreaterThan(0);
   });
 
+  it("every battery and artillery-leading combat general carries guns and a gun type", () => {
+    const files = readdirSync(resolve(DATA_DIR, "factions"));
+    let batteries = 0;
+    let artilleryGenerals = 0;
+    for (const file of files) {
+      const roster = readJson(`factions/${file}`) as {
+        cards: {
+          unitKey: string;
+          unitClass: string;
+          underlyingUnitClass: string;
+          guns: number | null;
+          gunType: string | null;
+        }[];
+      };
+      for (const card of roster.cards) {
+        if (card.underlyingUnitClass.startsWith("artillery")) {
+          if (card.unitClass === "general") artilleryGenerals += 1;
+          else batteries += 1;
+          expect(card.guns, card.unitKey).toBeGreaterThan(0);
+          expect(card.gunType, card.unitKey).toBeTruthy();
+        } else {
+          expect(card.guns, card.unitKey).toBeNull();
+          expect(card.gunType, card.unitKey).toBeNull();
+        }
+      }
+    }
+    expect(batteries).toBeGreaterThan(0);
+    expect(artilleryGenerals).toBeGreaterThan(0);
+  });
+
   it("corps index splits Theatres of War sides (not as AC)", () => {
     const index = readJson("corps-index.json") as {
       sides: { side: string; theatres: { corps: { factionKey: string; isArmyCorps: boolean }[] }[] }[];
@@ -81,6 +111,34 @@ describe("generated data", () => {
         (c) => !c.isGeneral && c.division === null && !UNPLACED_EXCEPTIONS.has(c.unitKey),
       );
       expect(unplaced, file).toHaveLength(0);
+    }
+  });
+
+  // autoPickCombatGenerals only tries each unit's first copy with its cheaper
+  // generals; that is exact only while a swap leaves the brigade and division alone.
+  it("every combat general sits in the brigade of the plain unit he leads", () => {
+    type Card = {
+      unitKey: string;
+      isGeneral: boolean;
+      generalKind: string | null;
+      capGroupKey: string;
+      baseUnitKey: string;
+      division: number | null;
+      brigade: number | null;
+    };
+    for (const file of readdirSync(resolve(DATA_DIR, "factions"))) {
+      const roster = readJson(`factions/${file}`) as { cards: Card[] };
+      const byKey = new Map(roster.cards.map((c) => [c.unitKey, c]));
+      for (const g of roster.cards) {
+        if (!(g.isGeneral && g.generalKind === "combat")) continue;
+        const base = byKey.get(g.baseUnitKey);
+        expect(base && !base.isGeneral, `${file} ${g.unitKey}`).toBe(true);
+        expect([g.capGroupKey, g.division, g.brigade], `${file} ${g.unitKey}`).toEqual([
+          base!.capGroupKey,
+          base!.division,
+          base!.brigade,
+        ]);
+      }
     }
   });
 

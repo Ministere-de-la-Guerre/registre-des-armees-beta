@@ -33,7 +33,7 @@ import {
 } from "../state/build";
 import { type FilterState, defaultFilters, isFilterActive, isHiddenByGeneralSwitch, matchesCard } from "../state/filters";
 import { combinedTowLayout, orderBrigadeCards } from "../state/ordering";
-import { type BuildConfig, type LoadResult, type SavedBuild, isDirty, resolveSavedBuild } from "../state/saves";
+import { type BuildConfig, type CurrentBuild, type LoadResult, type SavedBuild, isDirty, resolveSavedBuild } from "../state/saves";
 import { BottomTray } from "./BottomTray";
 import { BuilderGrid, type DivisionGroup, type GroupMeta, type MedallionHandlers } from "./BuilderGrid";
 import { DetailsPanel } from "./DetailsPanel";
@@ -83,6 +83,8 @@ export function Builder({
   postFlag,
   onBack,
   initialSaved = null,
+  onBuildChange,
+  context,
 }: {
   roster: FactionRoster;
   postFlag: string | null;
@@ -91,6 +93,13 @@ export function Builder({
    *  replay) instead of starting empty. Must be a stable reference — it is an
    *  effect dependency. Left unsaved, so the tray reads as having changes. */
   initialSaved?: SavedBuild | null;
+  /** Report every edit of the build, so a host that owns the army (the Ordre de
+   *  Bataille planner) can mirror it. Fired only for edits made after the seed is in
+   *  place — never with the empty pre-seed build — and not for the seed itself. */
+  onBuildChange?: (current: CurrentBuild) => void;
+  /** Where this builder was opened from. Replaces the "← Corps" back label and the
+   *  imported-from-replay wording with the host's own (e.g. "Army 2 of Plan"). */
+  context?: { backLabel: string; label: string };
 }) {
   const index = useMemo(() => indexRoster(roster), [roster]);
   const [build, setBuild] = useState<BuildState>(emptyBuild);
@@ -144,25 +153,41 @@ export function Builder({
   // and clicking one in the tray scrolls the grid to it and flashes it. TOW shows
   // the separate corps while it is on, so each unit sits under its own corps.
   const [locating, setLocating] = useState(false);
-  const [locateFlash, setLocateFlash] = useState<string | null>(null);
+  // The grid card being flashed; `seq` makes locating the same unit again a new
+  // state, so the grid scrolls back to it even while the last flash is running.
+  const [locateFlash, setLocateFlash] = useState<{ key: string; seq: number } | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   // Whether the grid uses the pooled brigade-type layout: always for custom
   // armies, and for TOW when the "Combine corps" toggle is on (unless locating).
   const combinedView = isCustom || (isTow && combinedTow && !locating);
+
+  // Latest host props, read by effects that must not re-run when a host re-renders
+  // with fresh closures (the seed effect below resets the whole builder).
+  const hostRef = useRef({ onBuildChange, context, config: { density, showCombatGenerals: filters.showCombatGenerals } });
+  useEffect(() => {
+    hostRef.current = { onBuildChange, context, config: { density, showCombatGenerals: filters.showCombatGenerals } };
+  });
+  // The build the seed effect installed and the notify effect has not yet seen: until
+  // the state catches up to it, `build` is still the pre-seed empty one.
+  const pendingSeed = useRef<BuildState | null>(null);
 
   useEffect(() => {
     // A seeded army (imported from a replay) resolves through the same path as a
     // loaded save, so unknown keys drop out and get reported the same way.
     const seed = initialSaved?.factionKey === roster.factionKey ? initialSaved : null;
     const seeded = seed ? resolveSavedBuild(seed, roster) : null;
-    setBuild(seeded ? seeded.build : emptyBuild());
+    const initialBuild = seeded ? seeded.build : emptyBuild();
+    pendingSeed.current = initialBuild;
+    setBuild(initialBuild);
     setFilters(defaultFiltersFor(roster.factionKey));
     setLoadedSaved(null);
+    const skipped = seeded?.missingKeys.length ? ` — ${seeded.missingKeys.length} unknown unit(s) skipped` : "";
+    const host = hostRef.current.context;
     setMessage(
       seed && seeded
-        ? `Imported “${seed.name}”${
-            seeded.missingKeys.length ? ` — ${seeded.missingKeys.length} unknown unit(s) skipped` : ""
-          }. Not saved yet.`
+        ? host
+          ? `Opened “${seed.name}” from ${host.label}${skipped}.`
+          : `Imported “${seed.name}”${skipped}. Not saved yet.`
         : null,
     );
     setHovered(null);
@@ -271,11 +296,11 @@ export function Builder({
       const over =
         c.isGeneral && c.generalKind === "staff" && staffGeneralAction(index, build, c) === "set-commander"
           ? staffSetWouldExceedBudget(index, build, c)
-          : addWouldExceedBudget(index, build, c);
+          : addWouldExceedBudget(summary.price, c);
       m.set(c.unitKey, over);
     }
     return m;
-  }, [index, build, roster.cards]);
+  }, [index, build, roster.cards, summary.price]);
 
   // --- selection helpers ---
   const qtyOf = (key: string) => qtyOfBuild(build, key);
@@ -430,26 +455,52 @@ export function Builder({
       setMessage(`Locate: your units are ringed in the grid — ${coarse ? "tap" : "click"} one in the bar to jump to it.`);
   };
 
+  // The grid card that stands for a build unit. With the "Combat generals" switch
+  // off a combat general has no card of his own, so the plain unit he leads (same
+  // brigade) stands in for him.
+  const gridCardFor = useCallback(
+    (card: UnitCard): UnitCard => (isHiddenByGeneralSwitch(card, filters) ? (index.byKey.get(card.baseUnitKey) ?? card) : card),
+    [filters, index],
+  );
+
+  // Grid cards ringed in locate mode: every build unit's stand-in.
+  const locatedKeys = useMemo(() => {
+    if (!locating) return null;
+    const keys = new Set<string>();
+    for (const key of [build.staffSlotUnitKey, ...build.instances.map((i) => i.unitKey)]) {
+      const card = key ? index.byKey.get(key) : undefined;
+      if (card) keys.add(gridCardFor(card).unitKey);
+    }
+    return keys;
+  }, [locating, build, index, gridCardFor]);
+
   // Find a build unit in the grid. A TOW unit whose corps is switched off in the
-  // Corps roll menu has no grid card, so its corps is switched back on first.
+  // Corps roll menu has no grid card, so its corps is switched back on first; a
+  // general outside the current rotation window is hidden by "Offered now".
   const locateUnit = (card: UnitCard) => {
-    const id = card.towSourceCorpsId;
+    const target = gridCardFor(card);
+    if (hiddenByRotation(target)) {
+      setMessage(`${target.name} isn't offered in the current rotation window — turn off "Offered now" to see it.`);
+      return;
+    }
+    const id = target.towSourceCorpsId;
     if (id && enabledCorps && !enabledCorps.has(id)) {
       toggleCorps(id, true);
       const info = towCorpsInfo?.get(id);
       setMessage(`Turned ${info ? `${roman(info.division)} · ${info.name}` : `corps ${id}`} back on to show this unit.`);
     }
-    setLocateFlash(card.unitKey);
+    setLocateFlash((f) => ({ key: target.unitKey, seq: (f?.seq ?? 0) + 1 }));
   };
 
   // Scroll the located card into view once the grid has rendered it, and let the
-  // flash run out. No card means a filter is hiding it.
+  // flash run out. Every way the grid hides a card is handled above, so a missing
+  // card should not happen; say so rather than scroll nowhere.
   useEffect(() => {
     if (!locateFlash) return;
     const frame = requestAnimationFrame(() => {
-      const el = mapRef.current?.querySelector(`[data-unit-key="${CSS.escape(locateFlash)}"]`);
+      const el = mapRef.current?.querySelector(`[data-unit-key="${CSS.escape(locateFlash.key)}"]`);
       if (el) el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-      else setMessage(`${index.byKey.get(locateFlash)?.name ?? "That unit"} is hidden by your filters — clear them to see it.`);
+      else setMessage(`${index.byKey.get(locateFlash.key)?.name ?? "That unit"} isn't shown in the grid right now.`);
     });
     const timer = setTimeout(() => setLocateFlash(null), 2600);
     return () => {
@@ -578,7 +629,7 @@ export function Builder({
     onHoverEnd: () => setHovered(null),
     isPrimed: (key) => primedKey === key,
     locateOf: (card) =>
-      locateFlash === card.unitKey ? "flash" : locating && isSelected(card.unitKey) ? "mark" : null,
+      locateFlash?.key === card.unitKey ? "flash" : locatedKeys?.has(card.unitKey) ? "mark" : null,
     pickRateOf: (card) => {
       const rate = pickRates.rateOf(card.unitKey, card.baseUnitKey);
       return rate ? <PickRateBar rate={rate} thresholds={pickRates.season?.thresholds} /> : null;
@@ -721,6 +772,26 @@ export function Builder({
   const current = { build, config, factionKey: roster.factionKey, armyCorpsName: roster.armyCorpsName };
   const dirty = isDirty(current, loadedSaved);
 
+  // Tell the host about edits (see onBuildChange). `current` is rebuilt every render,
+  // so key the effect on the pieces it is made of; the callback itself is read from
+  // hostRef so a host re-render can neither re-fire this nor re-seed the builder.
+  // Only the build (units + commander) triggers it: density and the combat-generals
+  // toggle are view settings, so flipping them must not look like an edit to the host
+  // (it would bump the slot's updatedAt and autosave for nothing).
+  useEffect(() => {
+    if (pendingSeed.current) {
+      if (build !== pendingSeed.current) return; // still the pre-seed build
+      pendingSeed.current = null; // the seed itself is not an edit
+      return;
+    }
+    hostRef.current.onBuildChange?.({
+      build,
+      config: hostRef.current.config,
+      factionKey: roster.factionKey,
+      armyCorpsName: roster.armyCorpsName,
+    });
+  }, [build, roster.factionKey, roster.armyCorpsName]);
+
   const applyLoaded = (result: LoadResult, saved: SavedBuild) => {
     setBuild(result.build);
     setDensity(result.config.density);
@@ -781,13 +852,19 @@ export function Builder({
     <div className="builder">
       <div className="corps-header">
         <button className="btn small" onClick={onBack}>
-          ← Corps
+          {context?.backLabel ?? "← Corps"}
         </button>
         {postFlag && <img className="post-flag" src={assetUrl(postFlag) ?? undefined} alt="" />}
         <div className="titles">
           <h2>{roster.armyCorpsName || roster.factionKey}</h2>
           <div className="sub">
-            {loadedSaved ? `${loadedSaved.name}${dirty ? " • unsaved changes" : ""}` : dirty ? "Unsaved build" : "New build"}
+            {loadedSaved
+              ? `${context ? `${context.label} · ` : ""}${loadedSaved.name}${dirty ? " • unsaved changes" : ""}`
+              : context
+                ? context.label
+                : dirty
+                  ? "Unsaved build"
+                  : "New build"}
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, marginLeft: 16 }}>
