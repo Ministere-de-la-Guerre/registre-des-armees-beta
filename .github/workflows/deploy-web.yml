@@ -69,7 +69,7 @@ jobs:
       - name: Verify (typecheck + lint + tests)
         run: npm run typecheck && npm run lint && npm test
         working-directory: web
-      - name: Build PWA (beta channel: pick rates on)
+      - name: Build PWA (beta channel, pick rates on)
         run: npm run build:pickrates
         working-directory: web
 
