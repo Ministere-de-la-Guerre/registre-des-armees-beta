@@ -31,6 +31,7 @@ import {
   copySavedBuildIntoSlot,
   emptyPlan,
   exportPlanJson,
+  fillPlaceholder,
   importPlanJson,
   isPlanDirty,
   isPlanEmpty,
@@ -46,7 +47,7 @@ import { type ArmyStats, planStats } from "../state/planStats";
 import { planPoints, plural, pointsTooltip } from "../state/planSummary";
 import { BuildRepository, type SavedBuild, buildToSaved, makeId, resolveSavedBuild } from "../state/saves";
 import type { StorageResult } from "../state/storage";
-import { fitsTeam, teamAnchor, teamKeysByFaction } from "../domain/teamRule";
+import { fitsTeam, planTeamConflict, teamAnchor, teamConflictText, teamKeysByFaction } from "../domain/teamRule";
 import { CorpsPickerModal } from "./CorpsPickerModal";
 import { useConfirm } from "./useConfirm";
 import { DetailsPanel } from "./DetailsPanel";
@@ -54,7 +55,17 @@ import { Medallion } from "./Medallion";
 import { NamePromptModal } from "./NamePromptModal";
 import { PlanDetailsModal } from "./PlanDetailsModal";
 import type { ExportRow } from "./PlanExportView";
-import { ArmyNotices, ArmyStatsGrid, ArmyUnits, PlanPointsChip, PlanShare, PlanTotals, PlanWarnings } from "./PlanParts";
+import {
+  ArmyNotices,
+  ArmyStatsGrid,
+  ArmyUnits,
+  PlanPointsChip,
+  PlanShare,
+  PlanTotals,
+  PlanWarnings,
+  TeamConflictWarning,
+} from "./PlanParts";
+import { SuggestTeamModal } from "./SuggestTeamModal";
 import { renderPlanImage } from "./renderPlanImage";
 import { SavedBuildPicker } from "./SavedBuildPicker";
 import { Tooltip } from "./Tooltip";
@@ -123,6 +134,7 @@ export function PlannerScreen({
   onRetryRoster,
   onBack,
   onOpenInBuilder,
+  ensureRoster,
 }: {
   corpsIndex: CorpsIndex | null;
   current: CurrentPlan;
@@ -132,6 +144,8 @@ export function PlannerScreen({
   onRetryRoster: (factionKey: string) => void;
   onBack: () => void;
   onOpenInBuilder: (slotId: string, entry: CorpsEntry, build: SavedBuild) => void;
+  /** Load (or reuse) any corps' roster: the team suggestion optimises armies not yet in the plan. */
+  ensureRoster: (factionKey: string) => Promise<FactionRoster>;
 }) {
   const { plan } = current;
   const confirm = useConfirm();
@@ -151,6 +165,9 @@ export function PlannerScreen({
   const [pickerSlot, setPickerSlot] = useState<string | null>(null);
   const [corpsSlot, setCorpsSlot] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  // The plan before the last team suggestion, for "Undo suggestion" (kept until used or replaced).
+  const [undoPlan, setUndoPlan] = useState<Plan | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [pendingShare, setPendingShare] = useState<File | null>(null);
   const [hovered, setHovered] = useState<{ card: UnitCard; anchor: DOMRect } | null>(null);
@@ -230,6 +247,14 @@ export function PlannerScreen({
     (b: SavedBuild) => entryByKey.get(b.factionKey)?.name || b.armyCorpsName || b.factionKey,
     [entryByKey],
   );
+  // A plan that mixes pools, theatres or sides (imported, or from before the rule) gets a
+  // standing warning, and "Suggest team" stays off until it is fixed.
+  const conflict = useMemo(() => planTeamConflict(plan.slots.map((s, i) => ({
+    slotIndex: i,
+    name: s.build ? corpsNameOf(s.build) : "",
+    key: s.build ? teamKeys.get(s.build.factionKey) ?? null : null,
+  }))), [plan.slots, teamKeys, corpsNameOf]);
+  const conflictText = conflict ? teamConflictText(conflict) : null;
 
   // --- the slots, resolved against their rosters --------------------------------
   const nextViews: SlotView[] = useMemo(
@@ -585,6 +610,28 @@ export function PlannerScreen({
           <button className="btn small" onClick={doNew}>
             New plan
           </button>
+          <button
+            className={`btn small${suggestOpen ? " on" : ""}`}
+            aria-haspopup="dialog"
+            onClick={() => setSuggestOpen(true)}
+            disabled={!corpsIndex || !!conflict}
+            title={conflictText
+              ?? "Suggest the best armies for a team points total (Army Corps of one theatre, or Theatres of War + Custom of one side)"}
+          >
+            Suggest team
+          </button>
+          {undoPlan && (
+            <button
+              className="btn small"
+              onClick={() => {
+                edit(() => undoPlan);
+                setUndoPlan(null);
+                setMessage("Restored the plan from before the suggestion.");
+              }}
+            >
+              Undo suggestion
+            </button>
+          )}
           <button className="btn small" onClick={() => downloadJson(exportPlanJson(plan), `${fileSafe(plan.name, "plan")}.json`)}>
             Export JSON
           </button>
@@ -618,6 +665,7 @@ export function PlannerScreen({
           <PlanShare stats={stats} />
 
           <div className="plan-strip-end">
+            <TeamConflictWarning text={conflictText} />
             <PlanWarnings stats={stats} />
             <button className="btn small" onClick={() => setDetailsOpen(true)}>
               Details
@@ -625,6 +673,21 @@ export function PlannerScreen({
           </div>
         </div>
       </div>
+
+      {suggestOpen && corpsIndex && renderOverlay(
+        <SuggestTeamModal
+          corpsIndex={corpsIndex}
+          teamKeys={teamKeys}
+          plan={plan}
+          loadRoster={ensureRoster}
+          onApply={(next) => {
+            setUndoPlan(planRef.current);
+            edit(() => next);
+          }}
+          onFill={(placeholder, build) => edit((p) => fillPlaceholder(p, placeholder, build))}
+          onClose={() => setSuggestOpen(false)}
+        />,
+      )}
 
       <div className="plan-armies">
         {plan.slots.map((slot, i) => (
